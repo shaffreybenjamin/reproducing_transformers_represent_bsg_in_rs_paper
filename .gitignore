@@ -1,0 +1,16 @@
+# Nested Astera library — cloned fresh on the GPU pod, not part of this repo
+simplexity/
+
+# Trained model checkpoints (large binaries)
+reproduction/models/*.pt
+
+# Generated outputs
+reproduction/figures/
+
+# Python caches & logs
+__pycache__/
+*.pyc
+*.log
+
+# Local RunPod secrets (created later)
+runpod/config.env
