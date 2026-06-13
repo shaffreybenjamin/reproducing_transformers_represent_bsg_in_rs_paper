@@ -1,11 +1,9 @@
 # Nested Astera library — cloned fresh on the GPU pod, not part of this repo
 simplexity/
 
-# Trained model checkpoints (large binaries)
-reproduction/models/*.pt
-
-# Generated outputs
-reproduction/figures/
+# Trained checkpoints (~700KB) and figures (~6MB) ARE committed so others can
+# reproduce/inspect results without retraining — see runpod/train.sh. Tiny enough
+# for plain git; no LFS needed.
 
 # Python caches & logs
 __pycache__/
