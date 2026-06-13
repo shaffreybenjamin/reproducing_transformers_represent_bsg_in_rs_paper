@@ -12,3 +12,6 @@ __pycache__/
 
 # Local RunPod secrets (created later)
 runpod/config.env
+
+# Local CPU venv for analysis/plotting (created by uv; do not commit)
+.venv/

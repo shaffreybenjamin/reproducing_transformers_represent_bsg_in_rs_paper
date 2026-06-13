@@ -50,6 +50,7 @@ def simplex_to_xy(beliefs: np.ndarray) -> np.ndarray:
 def load_model(device: str) -> tuple[HookedTransformer, int]:
     ckpt = torch.load(MODEL_DIR / "mess3_transformer.pt", map_location=device, weights_only=False)
     cfg = HookedTransformerConfig.from_dict(ckpt["cfg"])
+    cfg.device = device  # checkpoint was trained on cuda; honor the local device (e.g. cpu)
     model = HookedTransformer(cfg)
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()

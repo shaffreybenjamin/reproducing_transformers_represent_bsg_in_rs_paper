@@ -69,7 +69,9 @@ FIG_DIR = OUT_DIR / "figures"
 # --------------------------------------------------------------------------- #
 def load_model(device):
     ckpt = torch.load(MODEL_DIR / "mess3_transformer.pt", map_location=device, weights_only=False)
-    model = HookedTransformer(HookedTransformerConfig.from_dict(ckpt["cfg"]))
+    cfg = HookedTransformerConfig.from_dict(ckpt["cfg"])
+    cfg.device = device  # checkpoint was trained on cuda; honor the local device (e.g. cpu)
+    model = HookedTransformer(cfg)
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()
     return model, ckpt["context_len"]
