@@ -31,9 +31,11 @@ FIG_DIR = OUT_DIR / "figures"
 
 
 def simplex_to_xy(beliefs: np.ndarray) -> np.ndarray:
-    theta = np.pi / 3.0
-    basis = np.array([[1.0, 0.0], [np.cos(theta), np.sin(theta)]])
-    return beliefs[:, :2] @ basis
+    # Paper's projection (simplexity casper/analyses): state-2=blue top apex,
+    # state-0=red bottom-left, state-1=green bottom-right.
+    x = beliefs[:, 1] + 0.5 * beliefs[:, 2]
+    y = (np.sqrt(3) / 2.0) * beliefs[:, 2]
+    return np.stack([x, y], axis=1)
 
 
 def load_model(device: str):

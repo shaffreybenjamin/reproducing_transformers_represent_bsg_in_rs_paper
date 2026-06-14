@@ -82,6 +82,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.ndimage import grey_dilation
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
@@ -531,9 +532,43 @@ def belief_decode_r2(features, Y, w):
 
 
 def simplex_to_xy(beliefs):
-    theta = np.pi / 3.0
-    basis = np.array([[1.0, 0.0], [np.cos(theta), np.sin(theta)]])
-    return beliefs[:, :2] @ basis
+    # Paper's projection (simplexity casper/analyses): state-2=blue top apex,
+    # state-0=red bottom-left, state-1=green bottom-right.
+    x = beliefs[:, 1] + 0.5 * beliefs[:, 2]
+    y = (np.sqrt(3) / 2.0) * beliefs[:, 2]
+    return np.stack([x, y], axis=1)
+
+
+def _disk(px):
+    r = np.arange(-px, px + 1)
+    yy, xx = np.meshgrid(r, r)
+    return (xx ** 2 + yy ** 2) <= px ** 2
+
+
+def rasterize_simplex(xy, color_rgb, px=2, W=1000, H=900):
+    """Datashader-style render (matches the paper's tf.shade + tf.spread): bin
+    points into a fixed WxH grid, colour each occupied cell by the mean RGB of
+    its points, then dilate by `px`; empty cells stay white. Density is then
+    independent of figure size/DPI (the cause of earlier 'sparse' looking plots).
+    """
+    x, y = xy[:, 0], xy[:, 1]
+    x0, x1 = -0.05, 1.05
+    y0, y1 = -0.05, np.sqrt(3) / 2 + 0.05
+    ix = np.clip(((x - x0) / (x1 - x0) * W).astype(int), 0, W - 1)
+    iy = np.clip(((y - y0) / (y1 - y0) * H).astype(int), 0, H - 1)
+    sums = np.zeros((H, W, 3))
+    cnt = np.zeros((H, W))
+    np.add.at(sums, (iy, ix), color_rgb)
+    np.add.at(cnt, (iy, ix), 1)
+    occ = cnt > 0
+    mean = np.zeros((H, W, 3))
+    mean[occ] = sums[occ] / cnt[occ, None]
+    fp = _disk(px)
+    occ_d = grey_dilation(occ.astype(np.uint8), footprint=fp) > 0
+    mean_d = np.stack([grey_dilation(mean[:, :, c], footprint=fp) for c in range(3)], axis=-1)
+    img = np.ones((H, W, 3))
+    img[occ_d] = np.clip(mean_d[occ_d], 0, 1)
+    return img
 
 
 # --------------------------------------------------------------------------- #
@@ -675,24 +710,23 @@ def main():
     print(f"  unsup, recovered 3-D subspace     -> belief:   {r2_sub:.4f}  (must be <= supervised)")
     print(f"  unsup, operator-rollout state     -> belief:   {r2_roll:.4f}  (generative; certified by eig)")
 
-    fig, axes = plt.subplots(1, 3, figsize=(21, 7))
-    axes[0].scatter(true_xy[:, 0], true_xy[:, 1], c=color, s=2, edgecolors="none")
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    axes[0].imshow(rasterize_simplex(true_xy, color, px=2), origin="lower")
     axes[0].set_title("Ground truth (analytic belief)")
-    axes[1].scatter(act_aligned[:, 0], act_aligned[:, 1], c=color, s=2, edgecolors="none")
+    axes[1].imshow(rasterize_simplex(act_aligned, color, px=2), origin="lower")
     axes[1].set_title(
         "Unsupervised: raw activations\n"
         f"(d*={d_star}; align R^2 w={raw_r2_w:.3f} / u={raw_r2_u:.3f})"
     )
-    axes[2].scatter(roll_aligned[:, 0], roll_aligned[:, 1], c=rcolor, s=2, edgecolors="none")
+    axes[2].imshow(rasterize_simplex(roll_aligned, rcolor, px=2), origin="lower")
     axes[2].set_title(
         "Unsupervised: operator rollout (denoised)\n"
         f"(align R^2 w={roll_r2_w:.3f} / u={roll_r2_u:.3f})"
     )
     for ax in axes:
-        ax.set_aspect("equal")
         ax.axis("off")
     out = FIG_DIR / "fig04_unsupervised_oom_mess3.png"
-    fig.savefig(out, dpi=180, bbox_inches="tight")
+    fig.savefig(out, dpi=180, bbox_inches="tight", facecolor="white")
     print(f"\nsaved -> {out}")
 
 
