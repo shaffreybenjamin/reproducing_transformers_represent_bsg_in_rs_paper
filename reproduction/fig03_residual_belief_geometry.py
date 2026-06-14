@@ -4,21 +4,23 @@ The paper's central claim: a transformer trained only on next-token prediction
 linearly encodes the *entire* belief-state simplex (the fractal from Figure 1)
 in its residual stream - not just the next-token distribution.
 
-Method
+Method (matches Astera `casper/analyses`: sample -> dedup-by-prefix -> weighted)
 ------
 1. Sample many mess3 sequences together with their ground-truth belief state at
    every position (simplexity gives us both).
 2. Run the trained transformer with cache; grab the final-layer residual stream
-   at every position. resid[:, t] and belief[:, t] both condition on tokens 0..t,
-   so they are aligned.
-3. Fit a single linear map  resid -> belief  (ordinary least squares). A high
-   weighted R^2 means the belief is linearly readable from the residual stream.
-4. Visualize: project the regression-predicted beliefs into the 2-simplex,
-   colored by the ground-truth belief. If the fractal reappears, the network has
-   internalized the belief geometry. We also show a raw PCA of the residual
-   stream colored by belief.
+   at every position. resid[:, t] and belief[:, t] both condition on tokens 0..t.
+3. Deduplicate by prefix: causal attention makes a position's activation depend
+   only on its prefix, so all occurrences of a prefix are identical. The row
+   weight is the EMPIRICAL prefix frequency (occurrence count) — the natural data
+   measure from sampling alone (no MSP enumeration, no analytic P(w)).
+4. Fit a single linear map  resid -> belief  (probability-weighted least squares).
+   A high weighted R^2 means the belief is linearly readable from the residual.
+5. Visualize: project the regression-predicted beliefs into the 2-simplex,
+   colored by ground-truth belief; plus a raw PCA of the residual stream.
 """
 
+from collections import defaultdict
 from pathlib import Path
 
 import jax
@@ -58,47 +60,58 @@ def load_model(device: str) -> tuple[HookedTransformer, int]:
 
 
 def collect_residuals(model, hmm, context_len, device):
-    """Run sampled sequences through the model; return (resid, beliefs, probs)."""
+    """Sample sequences, dedup by prefix, return (X, Y, w) over unique prefixes.
+
+    Causal attention => a position's activation/belief depend only on its prefix,
+    so dedup is exact. Weight w = empirical prefix frequency (occurrence count,
+    normalised) — the natural measure from sampling, no analytic P(w).
+    """
     init_state = jnp.array(hmm.initial_state)
     key = jax.random.PRNGKey(SEED)
     layer = model.cfg.n_layers - 1
 
-    resid_chunks, belief_chunks, prob_chunks = [], [], []
+    resid, belief = {}, {}
+    count = defaultdict(int)
     done = 0
     while done < N_SEQUENCES:
         b = min(BATCH, N_SEQUENCES - done)
         key, bk = jax.random.split(key)
         gen_states = jnp.repeat(init_state[None, :], b, axis=0)
-        data = generate_data_batch_with_full_history(gen_states, hmm, b, context_len + 1, bk, device=device)
+        data = generate_data_batch_with_full_history(gen_states, hmm, b, context_len, bk, device=device)
         inputs = data["inputs"].long().to(device)  # (b, T)
         beliefs = np.asarray(data["belief_states"])  # (b, T, n_states)
-        probs = np.asarray(data["prefix_probabilities"])  # (b, T)
-
         with torch.no_grad():
             _, cache = model.run_with_cache(inputs, names_filter=f"blocks.{layer}.hook_resid_post")
-        resid = cache["resid_post", layer].cpu().numpy()  # (b, T, d_model)
-
-        T = inputs.shape[1]
-        resid_chunks.append(resid.reshape(-1, resid.shape[-1]))
-        belief_chunks.append(beliefs[:, :T].reshape(-1, beliefs.shape[-1]))
-        prob_chunks.append(probs[:, :T].reshape(-1))
+        z = cache["resid_post", layer].cpu().numpy()  # (b, T, d_model)
+        toks = inputs.cpu().numpy()
+        T = toks.shape[1]
+        for si in range(b):
+            pref = ()
+            for pos in range(T):
+                pref = pref + (int(toks[si, pos]),)
+                count[pref] += 1
+                if pref not in resid:
+                    resid[pref] = z[si, pos]
+                    belief[pref] = beliefs[si, pos]
         done += b
 
-    X = np.concatenate(resid_chunks, 0)
-    Y = np.concatenate(belief_chunks, 0)
-    w = np.concatenate(prob_chunks, 0)
+    keys = list(resid.keys())
+    X = np.stack([resid[k] for k in keys])
+    Y = np.stack([belief[k] for k in keys])
+    total = sum(count.values())
+    w = np.array([count[k] / total for k in keys])
     return X, Y, w
 
 
-def fit_linear(X: np.ndarray, Y: np.ndarray) -> tuple[np.ndarray, float]:
-    """OLS map X(+bias) -> Y. Returns predictions and weighted-by-uniform R^2."""
+def fit_linear(X: np.ndarray, Y: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, float]:
+    """Probability-weighted OLS map X(+bias) -> Y. Returns predictions and weighted R^2."""
     Xb = np.concatenate([X, np.ones((X.shape[0], 1))], axis=1)
-    beta, *_ = np.linalg.lstsq(Xb, Y, rcond=None)
+    sw = np.sqrt(w)[:, None]
+    beta, *_ = np.linalg.lstsq(Xb * sw, Y * sw, rcond=None)
     Yhat = Xb @ beta
-    ss_res = ((Y - Yhat) ** 2).sum()
-    ss_tot = ((Y - Y.mean(0)) ** 2).sum()
-    r2 = 1.0 - ss_res / ss_tot
-    return Yhat, float(r2)
+    ss_res = (w[:, None] * (Y - Yhat) ** 2).sum()
+    ss_tot = (w[:, None] * (Y - np.average(Y, axis=0, weights=w)) ** 2).sum()
+    return Yhat, float(1.0 - ss_res / ss_tot)
 
 
 def main() -> None:
@@ -108,10 +121,10 @@ def main() -> None:
     model, context_len = load_model(device)
 
     X, Y, w = collect_residuals(model, hmm, context_len, device)
-    print(f"collected {X.shape[0]} (position, sequence) points; d_model={X.shape[1]}")
+    print(f"unique prefixes from {N_SEQUENCES} sampled sequences: {X.shape[0]}; d_model={X.shape[1]}")
 
-    Yhat, r2 = fit_linear(X, Y)
-    print(f"linear regression residual -> belief  R^2 = {r2:.4f}")
+    Yhat, r2 = fit_linear(X, Y, w)
+    print(f"weighted linear regression residual -> belief  R^2 = {r2:.4f}")
 
     # subsample for plotting density
     rng = np.random.default_rng(0)

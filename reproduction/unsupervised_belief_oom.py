@@ -56,6 +56,15 @@ task-agnostic to apply, but both are wrong in general:
     old "divide by P" rollout R^2 is still reported for transparency, but it
     grades the operators on a 1/P-amplified scale the fit never optimized.
 
+Data path (paper-faithful, general)
+-----------------------------------
+Following the Astera analysis code (`casper/analyses`: build_prefix_dataset +
+weighted regression), we SAMPLE sequences, take every position, and deduplicate
+by prefix; the row weight is the EMPIRICAL prefix frequency (occurrence count).
+This uses no MSP enumeration and no analytic P(w) — only sampling — so it relies
+only on knowledge available for any model. (Causal attention makes the per-prefix
+activation exact, and the count is an unbiased estimate of P(w).)
+
 What is and isn't unsupervised
 ------------------------------
 - Subspace choice, order selection, operator fit, eigenvalue check, eval
@@ -76,12 +85,15 @@ import torch
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
-from simplexity.generative_processes.mixed_state_presentation import MixedStateTreeGenerator
-from simplexity.generative_processes.torch_generator import generate_data_batch
+from simplexity.generative_processes.torch_generator import (
+    generate_data_batch,
+    generate_data_batch_with_full_history,
+)
 from simplexity.generative_processes.transition_matrices import mess3
 
 MESS3_PARAMS = {"x": 0.05, "a": 0.85}
-MSP_DEPTH = 10          # enumerate prefixes up to this length
+N_SEQUENCES = 60000     # sampled sequences (paper-style; replaces MSP enumeration)
+BATCH = 2000
 D_MAX = 8               # largest latent dimension considered in the order sweep
 RIDGE = 1e-3            # relative ridge for the CCA whitening (numerical, generic)
 VAL_FRAC = 0.3          # held-out fraction for dynamics-consistent order selection
@@ -106,39 +118,50 @@ def load_model(device):
     return model, ckpt["context_len"]
 
 
-def collect_prefix_features(model, hmm, depth, context_len, device):
-    """For every MSP prefix (up to `depth`, capped at context_len), record:
-        resid[seq]  = final-position residual stream (pre-final-LayerNorm), R^d_model
-        soft[seq]   = final-position softmax over next token, R^vocab
-        belief[seq] = analytic belief (for evaluation/coloring ONLY)
+def collect_prefix_features_sampled(model, hmm, n_sequences, seq_len, batch, device):
+    """Paper-style data path (Astera `casper/analyses`): SAMPLE sequences, take
+    every position, and deduplicate by prefix. Because attention is causal, a
+    position's activation / softmax / belief depend only on the prefix, so all
+    occurrences of a prefix are identical and dedup is lossless. The row weight is
+    the EMPIRICAL prefix frequency (occurrence count, normalised) — an unbiased
+    estimate of P(w) obtained from sampling alone: no MSP enumeration and no
+    analytic probabilities. Belief is recorded for display/scoring ONLY.
+
+    Returns the same (resid, soft, belief, prefix_prob, max_len) interface as the
+    enumerated collector, so the rest of the pipeline is unchanged.
     """
     layer = model.cfg.n_layers - 1
-    max_len = min(depth, context_len)
-    tree = MixedStateTreeGenerator(hmm, max_sequence_length=max_len).generate()
-
-    by_len = defaultdict(lambda: ([], [], []))
-    for seq, v in tree.nodes.items():
-        if len(seq) == 0:
-            continue
-        seqs, bels, probs = by_len[len(seq)]
-        seqs.append(seq)
-        bels.append(v.belief_state)
-        probs.append(v.probability)
-
-    resid, soft, belief, prefix_prob = {}, {}, {}, {}
-    for L in sorted(by_len):
-        seqs, bels, probs = by_len[L]
-        inp = torch.tensor(np.array(seqs, dtype=np.int64), device=device)
+    init = jnp.array(hmm.initial_state)
+    key = jax.random.PRNGKey(SEED)
+    resid, soft, belief = {}, {}, {}
+    count = defaultdict(int)
+    done = 0
+    while done < n_sequences:
+        b = min(batch, n_sequences - done)
+        key, bk = jax.random.split(key)
+        gs = jnp.repeat(init[None, :], b, axis=0)
+        data = generate_data_batch_with_full_history(gs, hmm, b, seq_len, bk, device=device)
+        inputs = data["inputs"].long().to(device)
+        beliefs = np.asarray(data["belief_states"])                      # (b, T, n_states)
         with torch.no_grad():
-            logits, cache = model.run_with_cache(inp, names_filter=f"blocks.{layer}.hook_resid_post")
-        z = cache["resid_post", layer][:, -1, :].cpu().numpy()           # (n, d_model)
-        p = torch.softmax(logits[:, -1, :], dim=-1).cpu().numpy()        # (n, vocab)
-        for i, seq in enumerate(seqs):
-            resid[seq] = z[i]
-            soft[seq] = p[i]
-            belief[seq] = np.array(bels[i])
-            prefix_prob[seq] = probs[i]
-    return resid, soft, belief, prefix_prob, max_len
+            logits, cache = model.run_with_cache(inputs, names_filter=f"blocks.{layer}.hook_resid_post")
+        z = cache["resid_post", layer].cpu().numpy()                     # (b, T, d_model)
+        p = torch.softmax(logits, dim=-1).cpu().numpy()                  # (b, T, vocab)
+        toks = inputs.cpu().numpy()
+        T = toks.shape[1]
+        for si in range(b):
+            pref = ()
+            for pos in range(T):
+                pref = pref + (int(toks[si, pos]),)
+                count[pref] += 1
+                if pref not in resid:                                    # first occurrence (exact)
+                    resid[pref] = z[si, pos]
+                    soft[pref] = p[si, pos]
+                    belief[pref] = beliefs[si, pos]
+        done += b
+    total = sum(count.values())
+    prefix_prob = {w: count[w] / total for w in resid}                   # empirical P(w)
+    return resid, soft, belief, prefix_prob, seq_len
 
 
 def build_transitions(resid, soft, prefix_prob, max_len, vocab):
@@ -521,10 +544,10 @@ def main():
     vocab = hmm.vocab_size
     model, context_len = load_model(device)
 
-    resid, soft, belief, prefix_prob, max_len = collect_prefix_features(
-        model, hmm, MSP_DEPTH, context_len, device
+    resid, soft, belief, prefix_prob, max_len = collect_prefix_features_sampled(
+        model, hmm, N_SEQUENCES, context_len, BATCH, device
     )
-    print(f"prefixes collected: {len(resid)}  (lengths 1..{max_len})")
+    print(f"unique prefixes from {N_SEQUENCES} sampled sequences: {len(resid)}  (lengths 1..{max_len})")
 
     rows, X, P, Yc, Wt = build_transitions(resid, soft, prefix_prob, max_len, vocab)
     print(f"transition rows (prefixes with all children): {len(rows)}")
