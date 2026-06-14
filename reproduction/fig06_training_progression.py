@@ -72,7 +72,7 @@ def main():
         # --- top: supervised residual-stream decode (per-checkpoint regression) ---
         reg = LinearRegression().fit(Xfull, true_b)
         sup_xy = U.simplex_to_xy(reg.predict(Xfull))
-        axes[0, col].imshow(U.rasterize_simplex(sup_xy, color, px=2), origin="lower")
+        axes[0, col].imshow(U.rasterize_simplex(sup_xy, color, px=2, auto=True), origin="lower")
 
         # --- bottom: unsupervised raw activations in the recovered subspace ---
         rows, X, P, Yc, Wt = U.build_transitions(resid, soft, prefix_prob, max_len, vocab)
@@ -83,7 +83,7 @@ def main():
             print(f"  step {step}: ALS skipped ({exc}); using CCA basis")
         raw_xy = U.plane_coords(Xfull @ basis)
         raw_aligned, _ = U.affine_align(raw_xy, true_xy, wcol)
-        axes[1, col].imshow(U.rasterize_simplex(raw_aligned, color, px=2), origin="lower")
+        axes[1, col].imshow(U.rasterize_simplex(raw_aligned, color, px=2, auto=True), origin="lower")
 
         tok = step * TOK_PER_STEP
         axes[0, col].set_title(f"step {step:,}\n({tok:.2e} tokens)")

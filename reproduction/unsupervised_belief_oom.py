@@ -581,15 +581,27 @@ def _disk(px):
     return (xx ** 2 + yy ** 2) <= px ** 2
 
 
-def rasterize_simplex(xy, color_rgb, px=2, W=1000, H=900):
+def rasterize_simplex(xy, color_rgb, px=2, W=1000, H=900, auto=False):
     """Datashader-style render (matches the paper's tf.shade + tf.spread): bin
-    points into a fixed WxH grid, colour each occupied cell by the mean RGB of
-    its points, then dilate by `px`; empty cells stay white. Density is then
+    points into a WxH grid, colour each occupied cell by the mean RGB of its
+    points, then dilate by `px`; empty cells stay white. Density is then
     independent of figure size/DPI (the cause of earlier 'sparse' looking plots).
+
+    auto=True scales the window to the data's own bounding box (with a margin and
+    square pixels) instead of the fixed simplex window — needed when the points
+    can fall outside the simplex (e.g. an under-trained model's regression
+    extrapolates), which otherwise gets clipped into a misleading zoomed-in crop.
     """
     x, y = xy[:, 0], xy[:, 1]
-    x0, x1 = -0.05, 1.05
-    y0, y1 = -0.05, np.sqrt(3) / 2 + 0.05
+    if auto:
+        mx = 0.06 * (x.max() - x.min() + 1e-9)
+        my = 0.06 * (y.max() - y.min() + 1e-9)
+        x0, x1 = x.min() - mx, x.max() + mx
+        y0, y1 = y.min() - my, y.max() + my
+        H = max(200, int(round(W * (y1 - y0) / (x1 - x0))))  # square pixels -> no distortion
+    else:
+        x0, x1 = -0.05, 1.05
+        y0, y1 = -0.05, np.sqrt(3) / 2 + 0.05
     ix = np.clip(((x - x0) / (x1 - x0) * W).astype(int), 0, W - 1)
     iy = np.clip(((y - y0) / (y1 - y0) * H).astype(int), 0, H - 1)
     sums = np.zeros((H, W, 3))
