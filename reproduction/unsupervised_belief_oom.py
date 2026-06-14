@@ -56,14 +56,14 @@ task-agnostic to apply, but both are wrong in general:
     old "divide by P" rollout R^2 is still reported for transparency, but it
     grades the operators on a 1/P-amplified scale the fit never optimized.
 
-Data path (paper-faithful, general)
------------------------------------
-Following the Astera analysis code (`casper/analyses`: build_prefix_dataset +
-weighted regression), we SAMPLE sequences, take every position, and deduplicate
-by prefix; the row weight is the EMPIRICAL prefix frequency (occurrence count).
-This uses no MSP enumeration and no analytic P(w) — only sampling — so it relies
-only on knowledge available for any model. (Causal attention makes the per-prefix
-activation exact, and the count is an unbiased estimate of P(w).)
+Data path
+---------
+We ENUMERATE every MSP prefix up to context_len (all 3^L belief states), matching
+the paper's figure (and fig03/fig03b) so the geometry plots are dense. The recovery
+stays target-free: belief is used for display/scoring only, and prefix_prob is a
+process statistic used as a fit weight (exactly as the supervised baseline does).
+A sampling-based collector (collect_prefix_features_sampled) is kept as a
+scales-to-unknown-models alternative but is sparser at this short context.
 
 What is and isn't unsupervised
 ------------------------------
@@ -86,6 +86,7 @@ from scipy.ndimage import grey_dilation
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
+from simplexity.generative_processes.mixed_state_presentation import MixedStateTreeGenerator
 from simplexity.generative_processes.torch_generator import (
     generate_data_batch,
     generate_data_batch_with_full_history,
@@ -117,6 +118,41 @@ def load_model(device):
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()
     return model, ckpt["context_len"]
+
+
+def collect_prefix_features_enumerated(model, hmm, context_len, device):
+    """Enumerate EVERY MSP prefix up to context_len (all 3^L states; dense, like
+    fig03/fig03b), recording final-position resid (blocks.{last}.hook_resid_post),
+    softmax, analytic belief (display/scoring only) and analytic prefix probability.
+    Causal attention => the standalone length-L activation equals position L-1 of
+    any longer sequence with that prefix, so this matches the paper's data exactly.
+    """
+    layer = model.cfg.n_layers - 1
+    tree = MixedStateTreeGenerator(hmm, max_sequence_length=context_len).generate()
+    by_len = defaultdict(lambda: ([], [], []))
+    for seq, v in tree.nodes.items():
+        if len(seq) == 0:
+            continue
+        seqs, bels, probs = by_len[len(seq)]
+        seqs.append(seq)
+        bels.append(v.belief_state)
+        probs.append(v.probability)
+
+    resid, soft, belief, prefix_prob = {}, {}, {}, {}
+    for L in sorted(by_len):
+        seqs, bels, probs = by_len[L]
+        inp = torch.tensor(np.array(seqs, dtype=np.int64), device=device)
+        with torch.no_grad():
+            logits, cache = model.run_with_cache(inp, names_filter=f"blocks.{layer}.hook_resid_post")
+        z = cache["resid_post", layer][:, -1, :].cpu().numpy()
+        p = torch.softmax(logits[:, -1, :], dim=-1).cpu().numpy()
+        for i, seq in enumerate(seqs):
+            key = tuple(int(t) for t in seq)
+            resid[key] = z[i]
+            soft[key] = p[i]
+            belief[key] = np.asarray(bels[i], dtype=np.float32)
+            prefix_prob[key] = float(probs[i])
+    return resid, soft, belief, prefix_prob, context_len
 
 
 def collect_prefix_features_sampled(model, hmm, n_sequences, seq_len, batch, device):
@@ -579,10 +615,13 @@ def main():
     vocab = hmm.vocab_size
     model, context_len = load_model(device)
 
-    resid, soft, belief, prefix_prob, max_len = collect_prefix_features_sampled(
-        model, hmm, N_SEQUENCES, context_len, BATCH, device
+    # Enumerate all MSP prefixes (dense, matches fig03/fig03b). The recovery is
+    # still target-free: belief is display/scoring only; prefix_prob is a process
+    # statistic used as a fit weight (same as the supervised baseline).
+    resid, soft, belief, prefix_prob, max_len = collect_prefix_features_enumerated(
+        model, hmm, context_len, device
     )
-    print(f"unique prefixes from {N_SEQUENCES} sampled sequences: {len(resid)}  (lengths 1..{max_len})")
+    print(f"enumerated MSP prefixes: {len(resid)}  (lengths 1..{max_len})")
 
     rows, X, P, Yc, Wt = build_transitions(resid, soft, prefix_prob, max_len, vocab)
     print(f"transition rows (prefixes with all children): {len(rows)}")
