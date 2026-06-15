@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Train on a fresh RunPod GPU, pull results back, commit them, terminate the pod.
 #
-#   ./runpod/train.sh [STEPS]      # default 1000000 (the paper's value)
+#   ./runpod/train.sh [STEPS] [SCRIPT]   # default: 1000000  train_mess3.py
+#   ./runpod/train.sh 1000000 train_rrxor.py
 #
 # Reuses the venv installed by setup.sh on the network volume (no reinstall).
 
@@ -9,6 +10,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_config
 
 STEPS="${1:-1000000}"
+SCRIPT="${2:-train_mess3.py}"   # which reproduction/ training script to run
 [[ -n "${RUNPOD_VOLUME_ID:-}" ]] || { echo "No RUNPOD_VOLUME_ID. Run ./runpod/setup.sh first." >&2; exit 1; }
 
 create_pod
@@ -33,7 +35,7 @@ pod_rsync_up \
   "$REPO_ROOT/reproduction/" "root@$POD_IP:/workspace/repo/reproduction/"
 
 # 2. Launch training in a detached tmux session; write a sentinel on completion.
-echo ">> starting training: $STEPS steps"
+echo ">> starting training: $SCRIPT  ($STEPS steps)"
 pod_ssh "bash -se" <<EOF
 set -e
 $UV_ENV
@@ -41,7 +43,7 @@ command -v tmux >/dev/null || (apt-get update -qq && apt-get install -y -qq tmux
 rm -f /workspace/DONE
 cd /workspace/repo
 tmux new-session -d -s train \
-  "cd /workspace/repo && /workspace/.venv/bin/python -u reproduction/train_mess3.py $STEPS > reproduction/train_run.log 2>&1; echo \\\$? > /workspace/DONE"
+  "cd /workspace/repo && /workspace/.venv/bin/python -u reproduction/$SCRIPT $STEPS > reproduction/train_run.log 2>&1; echo \\\$? > /workspace/DONE"
 EOF
 
 # 3. Poll until done, streaming recent log lines.
