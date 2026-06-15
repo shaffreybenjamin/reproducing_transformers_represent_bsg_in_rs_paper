@@ -34,7 +34,10 @@ import unsupervised_belief_oom as U
 
 MESS3_PARAMS = {"x": 0.05, "a": 0.85}
 LATENT_D = 3
-TRAIN_FRAC = 0.7         # prefix split for CV (keeps enough intact transitions)
+# A transition needs parent + all 3 children in the train set, so a prefix split
+# keeps only frac^4 of transitions. Use 0.85 so the train count (~15k transitions)
+# is comparable to the supervised CV's training samples -> a fair held-out test.
+TRAIN_FRAC = 0.85
 SEED = 0
 
 OUT_DIR = Path(__file__).parent
@@ -133,7 +136,19 @@ def main():
     te_proj = U.plane_coords(np.stack([resid[s] for s in te_keys]) @ basis_cv)
     te_aligned, _ = U.affine_align(te_proj, te_xy, np.array([pp[s] for s in te_keys]))
     cv_img = U.rasterize_simplex(te_aligned, te_rgb, px=2)
-    cv_mse = onestep_mse(X, P, Yc, Wt, basis_cv, U.fit_operators(X @ basis_cv, P, Yc @ basis_cv, Wt)[0])
+
+    # panel-D CV bar: proper held-out one-step MSE via a TRANSITION-level split
+    # (fit subspace+operators on 80% of transitions, evaluate on the held-out 20%)
+    tperm = rng.permutation(X.shape[0])
+    ntr = int(0.8 * X.shape[0])
+    ti, vi = tperm[:ntr], tperm[ntr:]
+    basis_t = U.predictive_cca(X[ti], P[ti], Yc[ti], Wt[ti])[0][:, :LATENT_D]
+    try:
+        basis_t = U.als_refine_basis(X[ti], P[ti], Yc[ti], Wt[ti], basis_t, LATENT_D)
+    except Exception:
+        pass
+    ops_t = U.fit_operators(X[ti] @ basis_t, P[ti], Yc[ti] @ basis_t, Wt[ti])[0]
+    cv_mse = onestep_mse(X[vi], P[vi], Yc[vi], Wt[vi], basis_t, ops_t)
 
     # --- C: shuffle the parent->future pairing, refit ---
     perm = rng.permutation(X.shape[0])      # permute future rows w.r.t. past -> breaks dynamics
