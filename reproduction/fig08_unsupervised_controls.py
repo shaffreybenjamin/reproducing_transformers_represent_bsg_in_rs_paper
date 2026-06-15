@@ -2,25 +2,20 @@
 
 Head-to-head, as fair as the two methods allow:
   - SAME prefix train/test split for both, SAME held-out test set, SAME rendering.
-  - Supervised: a 64->3 linear map fit on TRAIN belief labels, applied to held-out
-    activations (the residual-stream decode).
-  - Unsupervised: a 64->3 subspace fit on TRAIN dynamics (CCA->ALS), applied to the
-    SAME held-out activations (projected; a train-fit plane + affine gauge for
-    display, never peeking at the test set).
-
-Both rows therefore answer the identical question on identical held-out
-activations: does the train-fit map place unseen prefixes on the fractal?
+  - Supervised  : 64->3 linear map fit on TRAIN belief labels, applied to held-out
+                  activations (residual-stream decode).
+  - Unsupervised: 64->3 subspace fit on TRAIN dynamics (CCA->ALS), applied to the
+                  SAME held-out activations (train-fit plane + affine for display).
 
   B Cross-Validation : held-out activations -> fractal persists for both.
-  C Shuffle Control  : labels (sup) / dynamics (unsup) shuffled, refit -> the map
-                       can no longer place points correctly.
-  D belief MSE       : recovery / cross-val / shuffle, same belief-reconstruction
-                       metric for both.
+  C Shuffle Control  : labels (sup) / dynamics (unsup) shuffled, refit -> collapse.
+  D MSE bars         : belief-reconstruction MSE at four training checkpoints, plus
+                       cross-validation and shuffle, with a broken x-axis (paper-style)
+                       so the huge shuffle bar doesn't shrink the rest.
 
-The one irreducible asymmetry: an OOM transition needs the parent + all 3 children
-in-train, so a prefix split gives the unsupervised method ~frac^4 of transitions.
-We use train=0.8 so it still gets ~12k transitions while both rows share the same
-20% (17,714-prefix) held-out set.
+Irreducible asymmetry: an OOM transition needs the parent + all 3 children in-train,
+so a prefix split gives the unsupervised method ~frac^4 of transitions; train=0.8
+keeps ~12k while both rows share the same 20% held-out set.
 """
 
 from pathlib import Path
@@ -42,9 +37,15 @@ SEED = 0
 OUT_DIR = Path(__file__).parent
 MODEL_DIR = OUT_DIR / "models"
 FIG_DIR = OUT_DIR / "figures"
-CKPT = MODEL_DIR / "mess3_transformer.pt"
+CKPTS = [
+    ("step 100", MODEL_DIR / "progression" / "step_100.pt"),
+    ("step 1,000", MODEL_DIR / "progression" / "step_1000.pt"),
+    ("step 5,000", MODEL_DIR / "progression" / "step_5000.pt"),
+    ("step 1,000,000", MODEL_DIR / "mess3_transformer.pt"),
+]
 TRI = np.array([[0, 0], [1, 0], [0.5, np.sqrt(3) / 2], [0, 0]])
 EXT = (-0.05, 1.05, -0.05, np.sqrt(3) / 2 + 0.05)
+BAR_COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3", "#937860"]
 
 
 def load(path, device):
@@ -87,8 +88,7 @@ def mse(a, b):
 
 
 def decode_mse(feat_fit, y_fit, feat_eval, y_eval):
-    reg = LinearRegression().fit(feat_fit, y_fit)
-    return mse(reg.predict(feat_eval), y_eval)
+    return mse(LinearRegression().fit(feat_fit, y_fit).predict(feat_eval), y_eval)
 
 
 def draw_triangle(ax, title):
@@ -97,53 +97,80 @@ def draw_triangle(ax, title):
     ax.set_aspect("equal"); ax.axis("off"); ax.set_title(title, fontsize=10)
 
 
+def broken_barh(axL, axR, vals, labels, wratio=3.0):
+    """Horizontal bar chart with a broken x-axis: small bars on axL (fine scale),
+    the outlier (shuffle) bar reaching into axR past a gap."""
+    y = np.arange(len(vals))[::-1]
+    small = vals[:-1]
+    xmaxL = max(small) * 1.25
+    big = vals[-1]
+    xloR, xhiR = big * 0.985, big * 1.01
+    for ax in (axL, axR):
+        ax.barh(y, vals, color=BAR_COLORS[: len(vals)])
+    axL.set_xlim(0, xmaxL)
+    axR.set_xlim(xloR, xhiR)
+    axL.set_yticks(y); axL.set_yticklabels(labels)
+    axR.set_yticks([])
+    axL.spines[["top", "right"]].set_visible(False)
+    axR.spines[["top", "left"]].set_visible(False)
+    axR.tick_params(left=False)
+    for yi, v in zip(y, vals):
+        if v <= xmaxL:
+            axL.text(v + xmaxL * 0.02, yi, f"{v:.4f}", va="center", fontsize=8)
+        else:
+            axR.text(big, yi, f"  {v:.4f}", va="center", fontsize=8)
+    d = 0.02
+    kw = dict(transform=axL.transAxes, color="k", clip_on=False, lw=1)
+    axL.plot((1 - d, 1 + d), (-d, d), **kw); axL.plot((1 - d, 1 + d), (1 - d, 1 + d), **kw)
+    dr = d * wratio
+    kw = dict(transform=axR.transAxes, color="k", clip_on=False, lw=1)
+    axR.plot((-dr, dr), (-d, d), **kw); axR.plot((-dr, dr), (1 - d, 1 + d), **kw)
+    axL.set_xlabel("Mean Squared Error", x=0.7)
+
+
 def main():
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     hmm = build_hidden_markov_model("mess3", MESS3_PARAMS)
     vocab = hmm.vocab_size
     rng = np.random.default_rng(SEED)
-    model, context_len = load(CKPT, device)
 
-    resid, soft, belief, pp, max_len = U.collect_prefix_features_enumerated(model, hmm, context_len, device)
-    seqs = [s for s in resid if s in belief]
-    Y = np.array([belief[s] for s in seqs])
-    Xact = np.stack([resid[s] for s in seqs])
-    w = np.array([pp[s] for s in seqs])
-    rgb = np.clip(Y, 0, 1)
+    # recovery belief-MSE at each training checkpoint (both methods)
+    sup_train, uns_train = [], []
+    fin = None
+    for label, path in CKPTS:
+        model, context_len = load(path, device)
+        resid, soft, belief, pp, max_len = U.collect_prefix_features_enumerated(model, hmm, context_len, device)
+        seqs = [s for s in resid if s in belief]
+        Y = np.array([belief[s] for s in seqs]); Xact = np.stack([resid[s] for s in seqs])
+        sup_train.append(mse(LinearRegression().fit(Xact, Y).predict(Xact), Y))
+        basis, _ = recover_basis(resid, soft, pp, max_len, vocab)
+        uns_train.append(decode_mse(Xact @ basis, Y, Xact @ basis, Y))
+        print(f"{label}: sup MSE={sup_train[-1]:.4f}  uns MSE={uns_train[-1]:.4f}")
+        fin = (resid, soft, belief, pp, max_len, seqs, Y, Xact)
 
-    # shared prefix split
+    resid, soft, belief, pp, max_len, seqs, Y, Xact = fin
+    w = np.array([pp[s] for s in seqs]); rgb = np.clip(Y, 0, 1)
     is_tr = rng.random(len(seqs)) < TRAIN_FRAC
     tr = np.where(is_tr)[0]; te = np.where(~is_tr)[0]
     tr_keys = [seqs[i] for i in tr]
-    print(f"split: train prefixes={len(tr)}  held-out test prefixes={len(te)}")
+    print(f"split: train={len(tr)} test={len(te)}")
 
-    # ===================== SUPERVISED (decode) =====================
-    sup_full = LinearRegression().fit(Xact, Y)
-    sup_rec_mse = mse(sup_full.predict(Xact), Y)
+    # supervised CV + shuffle (final model)
     sup_cv = LinearRegression().fit(Xact[tr], Y[tr])
-    sup_cv_pred = sup_cv.predict(Xact[te])
-    sup_cv_mse = mse(sup_cv_pred, Y[te])
-    Ysh = Y[rng.permutation(len(seqs))]
-    sup_sh_pred = LinearRegression().fit(Xact, Ysh).predict(Xact)
+    sup_cv_pred = sup_cv.predict(Xact[te]); sup_cv_mse = mse(sup_cv_pred, Y[te])
+    sup_sh_pred = LinearRegression().fit(Xact, Y[rng.permutation(len(seqs))]).predict(Xact)
     sup_sh_mse = mse(sup_sh_pred, Y)
-    sup_cv_xy = U.simplex_to_xy(sup_cv_pred)
-    sup_sh_xy = U.simplex_to_xy(sup_sh_pred)
+    sup_cv_xy = U.simplex_to_xy(sup_cv_pred); sup_sh_xy = U.simplex_to_xy(sup_sh_pred)
 
-    # ===================== UNSUPERVISED (raw-activation projection) =====================
-    basis_full, n_full = recover_basis(resid, soft, pp, max_len, vocab)
-    unsup_rec_mse = decode_mse(Xact @ basis_full, Y, Xact @ basis_full, Y)
+    # unsupervised CV + shuffle (final model)
     basis_tr, n_tr = recover_basis({k: resid[k] for k in tr_keys}, {k: soft[k] for k in tr_keys},
                                    {k: pp[k] for k in tr_keys}, max_len, vocab)
-    # CV visual: train-fit plane + affine (no test peeking), applied to held-out activations
-    proj_tr = Xact[tr] @ basis_tr
-    mu, comp = fit_plane(proj_tr)
-    xy_tr = (proj_tr - mu) @ comp
+    mu, comp = fit_plane(Xact[tr] @ basis_tr)
+    xy_tr = (Xact[tr] @ basis_tr - mu) @ comp
     M = fit_affine(xy_tr, U.simplex_to_xy(Y[tr]), w[tr])
     unsup_cv_xy = apply_affine((Xact[te] @ basis_tr - mu) @ comp, M)
     unsup_cv_mse = decode_mse(Xact[tr] @ basis_tr, Y[tr], Xact[te] @ basis_tr, Y[te])
-    print(f"unsup transitions: full={n_full}  train={n_tr}")
-    # Shuffle: break the dynamics, refit subspace, project all activations
     _, Xt, Pt, Yct, Wtt = U.build_transitions(resid, soft, pp, max_len, vocab)
     perm = rng.permutation(Xt.shape[0])
     basis_sh = U.predictive_cca(Xt, Pt[perm], Yct[perm], Wtt)[0][:, :LATENT_D]
@@ -151,44 +178,33 @@ def main():
         basis_sh = U.als_refine_basis(Xt, Pt[perm], Yct[perm], Wtt, basis_sh, LATENT_D)
     except Exception:
         pass
-    proj_sh = Xact @ basis_sh
-    mu_s, comp_s = fit_plane(proj_sh)
-    xy_s = (proj_sh - mu_s) @ comp_s
-    Ms = fit_affine(xy_s, U.simplex_to_xy(Y), w)
-    unsup_sh_xy = apply_affine(xy_s, Ms)
+    mu_s, comp_s = fit_plane(Xact @ basis_sh)
+    xy_s = (Xact @ basis_sh - mu_s) @ comp_s
+    unsup_sh_xy = apply_affine(xy_s, fit_affine(xy_s, U.simplex_to_xy(Y), w))
     unsup_sh_mse = decode_mse(Xact @ basis_sh, Y, Xact @ basis_sh, Y)
+    print(f"sup  cv={sup_cv_mse:.4f} shuf={sup_sh_mse:.4f}")
+    print(f"uns  cv={unsup_cv_mse:.4f} shuf={unsup_sh_mse:.4f}  (train transitions={n_tr})")
 
-    print(f"belief MSE  sup: rec={sup_rec_mse:.4f} cv={sup_cv_mse:.4f} shuf={sup_sh_mse:.4f}")
-    print(f"belief MSE  uns: rec={unsup_rec_mse:.4f} cv={unsup_cv_mse:.4f} shuf={unsup_sh_mse:.4f}")
+    # ---------------- plot ----------------
+    fig = plt.figure(figsize=(16, 10))
+    gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 1.4], hspace=0.25, wspace=0.3)
+    bar_labels = [l for l, _ in CKPTS] + ["Cross Val", "Shuffle"]
+    rows = [
+        ("Supervised\n(belief decode)", sup_cv_xy, rgb[te], sup_cv_mse, sup_sh_xy, rgb, sup_sh_mse,
+         sup_train + [sup_cv_mse, sup_sh_mse]),
+        ("Unsupervised\n(raw activations)", unsup_cv_xy, rgb[te], unsup_cv_mse, unsup_sh_xy, rgb, unsup_sh_mse,
+         uns_train + [unsup_cv_mse, unsup_sh_mse]),
+    ]
+    for r, (rlabel, cvxy, cvc, cvm, shxy, shc, shm, vals) in enumerate(rows):
+        axCV = fig.add_subplot(gs[r, 0]); axSh = fig.add_subplot(gs[r, 1])
+        axCV.imshow(U.rasterize_simplex(cvxy, cvc, px=2), extent=EXT, origin="lower")
+        draw_triangle(axCV, f"Cross Validation (MSE {cvm:.4f})")
+        axSh.imshow(U.rasterize_simplex(shxy, shc, px=2), extent=EXT, origin="lower")
+        draw_triangle(axSh, f"Shuffle Control (MSE {shm:.4f})")
+        axCV.text(-0.16, 0.5, rlabel, transform=axCV.transAxes, rotation=90, va="center", ha="center", fontsize=12)
+        sub = gs[r, 2].subgridspec(1, 2, width_ratios=[3, 1], wspace=0.08)
+        broken_barh(fig.add_subplot(sub[0]), fig.add_subplot(sub[1]), vals, bar_labels)
 
-    # ===================== plot =====================
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    axes[0, 0].imshow(U.rasterize_simplex(sup_cv_xy, rgb[te], px=2), extent=EXT, origin="lower")
-    draw_triangle(axes[0, 0], f"Cross Validation (MSE {sup_cv_mse:.4f})")
-    axes[0, 1].imshow(U.rasterize_simplex(sup_sh_xy, rgb, px=2), extent=EXT, origin="lower")
-    draw_triangle(axes[0, 1], f"Shuffle Control (MSE {sup_sh_mse:.4f})")
-    axes[1, 0].imshow(U.rasterize_simplex(unsup_cv_xy, rgb[te], px=2), extent=EXT, origin="lower")
-    draw_triangle(axes[1, 0], f"Cross Validation (MSE {unsup_cv_mse:.4f})")
-    axes[1, 1].imshow(U.rasterize_simplex(unsup_sh_xy, rgb, px=2), extent=EXT, origin="lower")
-    draw_triangle(axes[1, 1], f"Shuffle Control (MSE {unsup_sh_mse:.4f})")
-
-    for r, (rec, cv, sh) in enumerate([(sup_rec_mse, sup_cv_mse, sup_sh_mse),
-                                       (unsup_rec_mse, unsup_cv_mse, unsup_sh_mse)]):
-        ax = axes[r, 2]
-        labels = ["Recovery", "Cross Val", "Shuffle"]
-        vals = [rec, cv, sh]
-        ax.barh([2, 1, 0], vals, color=["#4C72B0", "#55A868", "#937860"])
-        for y, v in zip([2, 1, 0], vals):
-            ax.text(v + max(vals) * 0.01, y, f"{v:.4f}", va="center", fontsize=9)
-        ax.set_yticks([2, 1, 0]); ax.set_yticklabels(labels)
-        ax.set_xlabel("belief-reconstruction MSE")
-        ax.spines[["top", "right"]].set_visible(False)
-        ax.set_title("error")
-
-    axes[0, 0].text(-0.18, 0.5, "Supervised\n(belief decode)", transform=axes[0, 0].transAxes,
-                    rotation=90, va="center", ha="center", fontsize=12)
-    axes[1, 0].text(-0.18, 0.5, "Unsupervised\n(raw activations)", transform=axes[1, 0].transAxes,
-                    rotation=90, va="center", ha="center", fontsize=12)
     fig.suptitle("Belief-state geometry is nontrivial — supervised vs. unsupervised, raw activations  (Mess3)\n"
                  f"shared 80/20 prefix split, same {len(te)}-prefix held-out set", fontsize=13)
     out = FIG_DIR / "fig08_unsupervised_controls_mess3.png"
