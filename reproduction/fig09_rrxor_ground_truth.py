@@ -59,14 +59,19 @@ def main():
     B, index = unique_msp_beliefs(hmm)
     print(f"RRXOR MSP unique belief states: {B.shape[0]}  (belief dim {B.shape[1]})")
 
-    pca = PCA(n_components=2).fit(B)
-    xy = pca.transform(B)
+    # The 5-D beliefs PCA to 4 non-trivial components with variances
+    # ~0.33/0.29/0.24/0.14. PC2 captures an *asymmetric* direction; the paper's
+    # symmetric four-apex 2-D view is the two SYMMETRIC components PC1 and PC3
+    # (RRXOR's 0<->1 / T<->F symmetry). Project onto those.
+    pca = PCA(n_components=4).fit(B)
+    Z = pca.transform(B)
+    xy = Z[:, [0, 2]]
     colors = distinct_colors(len(B))
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.scatter(xy[:, 0], xy[:, 1], c=colors, s=90, edgecolors="white", linewidths=0.5)
     ax.set_title("Ground Truth Belief Geometry  (RRXOR, 36 MSP states)")
-    ax.set_xlabel("PCA 1"); ax.set_ylabel("PCA 2")
+    ax.set_xlabel("PCA 1"); ax.set_ylabel("PCA 3")
     ax.set_aspect("equal")
     ax.spines[["top", "right"]].set_visible(False)
     out = FIG_DIR / "fig09_rrxor_ground_truth.png"
