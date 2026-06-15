@@ -1,18 +1,25 @@
-"""Train a transformer on RRXOR with the paper's exact hyperparameters (App. A.6).
+"""Train a transformer on RRXOR — EXACT continuous-stream pipeline (paper / epsilon-transformers).
 
-Same architecture/optimiser as the Mess3 run -- context window 10, d_model 64,
-head dim 8, 1 head, 4 layers, MLP 256, ReLU, LayerNorm; SGD, batch 64, lr 0.01,
-no weight decay, 1,000,000 steps -- only the process differs (RRXOR p1=p2=0.5,
-vocab 2).
+Matches epsilon-transformers' ProcessDataset (IterableDataset) + DataLoader:
+  * the process emits ONE continuous stream of tokens,
+  * chopped into consecutive, non-overlapping length-(n_ctx+1)=11 windows,
+    each window -> (input = w[:-1], target = w[1:]),
+  * batched 64 CONSECUTIVE windows per gradient step (no shuffle).
+So the hidden state is continuous across windows (each window's start state is the
+continuation of the previous one), exactly as in their pipeline.
 
-SPEED / COST: the model is tiny (143K params), so a per-step jax data-generation
-call + host<->device transfer dominates wall-clock (it was ~120 ms/step, i.e. the
-GPU sat idle). We instead generate data in large ON-DEVICE BLOCKS and slice them
-into minibatches, amortising the jax dispatch ~BLOCK_STEPS-fold so the loop is
-compute-bound. This is the single biggest lever on RunPod cost (see runpod/README).
+Hyperparameters are the paper's App. A.6: context 10, d_model 64, head dim 8,
+1 head, 4 layers, MLP 256, ReLU, LayerNorm; SGD, batch 64, lr 0.01, no weight
+decay, 1,000,000 steps. RRXOR p1=p2=0.5 (vocab 2).
+
+The stream is generated in memory BLOCKS via jax.lax.scan, carrying the hidden
+state AND the rng key across blocks -- so it is a single unbroken stream (identical
+data to generating it all at once) but produced in chunks so the tiny model's GPU
+isn't stalled by per-step generation (the RunPod cost lever; see runpod/COST_NOTES.md).
 """
 
 import sys
+from functools import partial
 from pathlib import Path
 
 import jax
@@ -23,8 +30,7 @@ import torch
 import torch.nn.functional as F
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
-from simplexity.generative_processes.builder import build_hidden_markov_model
-from simplexity.generative_processes.torch_generator import generate_data_batch
+from simplexity.generative_processes.transition_matrices import rrxor
 
 RRXOR_PARAMS = {"p1": 0.5, "p2": 0.5}
 CONTEXT_LEN = 10
@@ -34,13 +40,37 @@ LEARNING_RATE = 0.01           # SGD
 SEED = 42
 LOG_EVERY = 500
 CKPT_EVERY = 5_000
-BLOCK_STEPS = 2_000            # generate this many steps of data per jax call (on device)
+BLOCK_STEPS = 2_000            # generate this many steps' worth of the stream per jax.lax.scan
+N_TOKENS = BLOCK_STEPS * BATCH_SIZE * (CONTEXT_LEN + 1)   # tokens per generated block
 OPTIMAL_LOSS = float(2 * np.log(2) / 3)  # 0.4621 nats: 2 random + 1 deterministic token per RRXOR triplet
 
 OUT_DIR = Path(__file__).parent
 MODEL_DIR = OUT_DIR / "models"
 FIG_DIR = OUT_DIR / "figures"
 CKPT = MODEL_DIR / "rrxor_transformer.pt"
+
+# RRXOR transition tensor T[token, from, to]; from a state s, the joint distribution over
+# (token, next_state) is T[:, s, :] (shape 2x5, sums to 1). States S,0,1,T,F.
+_T = jnp.asarray(np.array(rrxor(**RRXOR_PARAMS)))
+_NSTATES = _T.shape[1]
+STATIONARY = jnp.array([2.0, 1.0, 1.0, 1.0, 1.0]) / 6.0
+
+
+def _emit(carry, _):
+    s, key = carry
+    key, sub = jax.random.split(key)
+    logp = jnp.log(_T[:, s, :].reshape(-1))     # log P(token*NS + next | s); forbidden -> -inf
+    idx = jax.random.categorical(sub, logp)
+    token = idx // _NSTATES
+    nxt = idx % _NSTATES
+    return (nxt, key), token
+
+
+@partial(jax.jit, static_argnums=2)
+def gen_stream_block(s0, key0, n):
+    """Continue the single emission stream for n tokens; return (final_state, final_key, tokens)."""
+    (s_final, key_final), tokens = jax.lax.scan(_emit, (s0, key0), None, length=n)
+    return s_final, key_final, tokens.astype(jnp.int32)
 
 
 def build_model(vocab_size: int, device: str) -> HookedTransformer:
@@ -66,28 +96,27 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}  steps: {NUM_STEPS}  block_steps: {BLOCK_STEPS}  optimal loss: {OPTIMAL_LOSS:.4f}")
 
-    hmm = build_hidden_markov_model("rrxor", RRXOR_PARAMS)
-    model = build_model(hmm.vocab_size, device)
-    print(f"model params: {sum(p.numel() for p in model.parameters())}  vocab: {hmm.vocab_size}")
+    vocab_size = int(_T.shape[0])
+    model = build_model(vocab_size, device)
+    print(f"model params: {sum(p.numel() for p in model.parameters())}  vocab: {vocab_size}")
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, weight_decay=0.0)
 
-    init_state = jnp.array(hmm.initial_state)
     key = jax.random.PRNGKey(SEED)
+    key, sk = jax.random.split(key)
+    state = jax.random.categorical(sk, jnp.log(STATIONARY))   # initial hidden state ~ stationary
 
     losses: list[float] = []
-    inp = lab = None
+    inp_all = lab_all = None
     model.train()
     for step in range(NUM_STEPS):
         b = step % BLOCK_STEPS
-        if b == 0:  # generate a fresh on-device block of BLOCK_STEPS*BATCH sequences
-            key, batch_key = jax.random.split(key)
-            n = BLOCK_STEPS * BATCH_SIZE
-            gen_states = jnp.repeat(init_state[None, :], n, axis=0)
-            _, inp, lab = generate_data_batch(gen_states, hmm, n, CONTEXT_LEN + 1, batch_key, device=device)
-            inp = inp.long().to(device)
-            lab = lab.long().to(device)
-        x = inp[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
-        y = lab[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
+        if b == 0:  # continue the single stream for one block, chop into consecutive windows
+            state, key, toks = gen_stream_block(state, key, N_TOKENS)
+            windows = np.asarray(toks).reshape(BLOCK_STEPS * BATCH_SIZE, CONTEXT_LEN + 1)
+            w = torch.from_numpy(windows).long().to(device)
+            inp_all, lab_all = w[:, :-1], w[:, 1:]
+        x = inp_all[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
+        y = lab_all[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
 
         logits = model(x)
         loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
@@ -113,7 +142,7 @@ def main() -> None:
         ax.plot(range(w - 1, len(losses)), smooth, "r-", lw=1.5, label="smoothed")
     ax.axhline(OPTIMAL_LOSS, color="k", ls="--", lw=1, label=f"optimal {OPTIMAL_LOSS:.4f}")
     ax.set_xlabel("step"); ax.set_ylabel("cross-entropy loss")
-    ax.set_title(f"RRXOR (paper config) training (final {losses[-1]:.4f})")
+    ax.set_title(f"RRXOR (paper config, continuous stream) training (final {losses[-1]:.4f})")
     ax.legend()
     fig.savefig(FIG_DIR / "fig_rrxor_training_loss.png", dpi=150, bbox_inches="tight")
 
