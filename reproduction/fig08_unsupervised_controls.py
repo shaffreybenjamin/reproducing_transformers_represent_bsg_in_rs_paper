@@ -1,24 +1,26 @@
-"""Figure 6 (B/C/D) analogue — UNSUPERVISED (OOM) controls.
+"""Figure 6 B/C/D — supervised vs. unsupervised controls on the RAW ACTIVATIONS.
 
-The supervised controls attack a regression that targets belief. The OOM never
-sees belief — it recovers a subspace + per-token operators from activations +
-softmax — so the analogues attack the *dynamics*:
+Head-to-head, as fair as the two methods allow:
+  - SAME prefix train/test split for both, SAME held-out test set, SAME rendering.
+  - Supervised: a 64->3 linear map fit on TRAIN belief labels, applied to held-out
+    activations (the residual-stream decode).
+  - Unsupervised: a 64->3 subspace fit on TRAIN dynamics (CCA->ALS), applied to the
+    SAME held-out activations (projected; a train-fit plane + affine gauge for
+    display, never peeking at the test set).
 
-  B  Cross-validation : fit the CCA->ALS subspace on a TRAIN split of prefixes,
-                        project the held-out prefixes' activations -> fractal
-                        persists (subspace is global, not memorised).
-  C  Shuffle control  : permute the parent->future pairing in the transitions
-                        (breaks the dynamics) and refit. The decisive collapse is
-                        in the OPERATORS: eig(A^x) no longer matches eig(T^x).
-                        (The raw-activation panel only partly collapses because
-                        activations stay belief-rich whatever subspace you pick —
-                        which is exactly why the operator/one-step test is the
-                        real control here.)
-  D  One-step MSE     : the OOM's native reconstruction error (rescaled one-step
-                        prediction), for each training checkpoint, cross-validation
-                        and shuffle.
+Both rows therefore answer the identical question on identical held-out
+activations: does the train-fit map place unseen prefixes on the fractal?
 
-Same model/config/projection/rasterizer as fig06/fig07.
+  B Cross-Validation : held-out activations -> fractal persists for both.
+  C Shuffle Control  : labels (sup) / dynamics (unsup) shuffled, refit -> the map
+                       can no longer place points correctly.
+  D belief MSE       : recovery / cross-val / shuffle, same belief-reconstruction
+                       metric for both.
+
+The one irreducible asymmetry: an OOM transition needs the parent + all 3 children
+in-train, so a prefix split gives the unsupervised method ~frac^4 of transitions.
+We use train=0.8 so it still gets ~12k transitions while both rows share the same
+20% (17,714-prefix) held-out set.
 """
 
 from pathlib import Path
@@ -26,90 +28,73 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from sklearn.linear_model import LinearRegression
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
-from simplexity.generative_processes.transition_matrices import mess3
 import unsupervised_belief_oom as U
 
 MESS3_PARAMS = {"x": 0.05, "a": 0.85}
 LATENT_D = 3
-# A transition needs parent + all 3 children in the train set, so a prefix split
-# keeps only frac^4 of transitions. Use 0.85 so the train count (~15k transitions)
-# is comparable to the supervised CV's training samples -> a fair held-out test.
-TRAIN_FRAC = 0.85
+TRAIN_FRAC = 0.8
 SEED = 0
 
 OUT_DIR = Path(__file__).parent
 MODEL_DIR = OUT_DIR / "models"
 FIG_DIR = OUT_DIR / "figures"
-CKPTS = [
-    ("100", MODEL_DIR / "progression" / "step_100.pt"),
-    ("1,000", MODEL_DIR / "progression" / "step_1000.pt"),
-    ("5,000", MODEL_DIR / "progression" / "step_5000.pt"),
-    ("1,000,000", MODEL_DIR / "mess3_transformer.pt"),
-]
+CKPT = MODEL_DIR / "mess3_transformer.pt"
 TRI = np.array([[0, 0], [1, 0], [0.5, np.sqrt(3) / 2], [0, 0]])
 EXT = (-0.05, 1.05, -0.05, np.sqrt(3) / 2 + 0.05)
 
 
 def load(path, device):
     ck = torch.load(path, map_location=device, weights_only=False)
-    cfg = HookedTransformerConfig.from_dict(ck["cfg"])
-    cfg.device = device
-    model = HookedTransformer(cfg)
-    model.load_state_dict(ck["state_dict"])
+    cfg = HookedTransformerConfig.from_dict(ck["cfg"]); cfg.device = device
+    model = HookedTransformer(cfg); model.load_state_dict(ck["state_dict"])
     model.to(device).eval()
-    return model, ck["context_len"], ck["step"]
+    return model, ck["context_len"]
 
 
-def recover(resid, soft, prefix_prob, max_len, vocab, d=LATENT_D, als=True):
-    """CCA(->ALS) basis + per-token operators from a (subset of) prefixes."""
-    rows, X, P, Yc, Wt = U.build_transitions(resid, soft, prefix_prob, max_len, vocab)
+def recover_basis(resid, soft, pp, max_len, vocab, d=LATENT_D):
+    rows, X, P, Yc, Wt = U.build_transitions(resid, soft, pp, max_len, vocab)
     basis = U.predictive_cca(X, P, Yc, Wt)[0][:, :d]
-    if als:
-        try:
-            basis = U.als_refine_basis(X, P, Yc, Wt, basis, d)
-        except Exception as exc:
-            print(f"  ALS skipped ({exc})")
-    ops, _ = U.fit_operators(X @ basis, P, Yc @ basis, Wt)
-    return basis, ops, (rows, X, P, Yc, Wt)
+    try:
+        basis = U.als_refine_basis(X, P, Yc, Wt, basis, d)
+    except Exception:
+        pass
+    return basis, len(rows)
 
 
-def onestep_mse(X, P, Yc, Wt, basis, ops):
-    A, Bc = X @ basis, Yc @ basis
-    num = den = 0.0
-    for x in ops:
-        r = A @ ops[x] - P[:, x, None] * Bc[:, x, :]
-        num += float((Wt[:, None] * r ** 2).sum())
-        den += float(Wt.sum()) * A.shape[1]
-    return num / den
+def fit_plane(pts):
+    mu = pts.mean(0)
+    _, _, vt = np.linalg.svd(pts - mu, full_matrices=False)
+    return mu, vt[:2].T
 
 
-def sub(d, keys):
-    return {k: d[k] for k in keys}
+def fit_affine(src, dst, w):
+    Xb = np.concatenate([src, np.ones((len(src), 1))], axis=1)
+    sw = np.sqrt(w)[:, None]
+    M, *_ = np.linalg.lstsq(Xb * sw, dst * sw, rcond=None)
+    return M
 
 
-def rollout_img(resid, basis, ops, max_len, vocab, seqs, belief, pp, px=2):
-    """Geometry generated by the operators (an IFS), rasterized in the simplex
-    frame. Dense (regenerates the whole tree) and -- under broken dynamics, where
-    the operator spectrum collapses -- it contracts to a point/line, a genuine
-    collapse (no affine-inflation of a belief-rich activation cloud)."""
-    proj_full = {s: resid[s] @ basis for s in resid}
-    e, _ = U.recover_eval_functional(np.stack(list(proj_full.values())))
-    roll = U.rollout_states(proj_full, ops, e, max_len, vocab)
-    rs = [s for s in seqs if s in roll and np.isfinite(roll[s]).all()]
-    xy = U.plane_coords(np.array([roll[s] for s in rs]))
-    txy = U.simplex_to_xy(np.array([belief[s] for s in rs]))
-    aligned, _ = U.affine_align(xy, txy, np.array([pp[s] for s in rs]))
-    rgb = np.clip(np.array([belief[s] for s in rs]), 0, 1)
-    return U.rasterize_simplex(aligned, rgb, px=px)
+def apply_affine(src, M):
+    return np.concatenate([src, np.ones((len(src), 1))], axis=1) @ M
 
 
-def draw_triangle(ax):
+def mse(a, b):
+    return float(np.mean((a - b) ** 2))
+
+
+def decode_mse(feat_fit, y_fit, feat_eval, y_eval):
+    reg = LinearRegression().fit(feat_fit, y_fit)
+    return mse(reg.predict(feat_eval), y_eval)
+
+
+def draw_triangle(ax, title):
     ax.plot(TRI[:, 0], TRI[:, 1], color="0.6", lw=1)
     ax.set_xlim(EXT[0], EXT[1]); ax.set_ylim(EXT[2], EXT[3])
-    ax.set_aspect("equal"); ax.axis("off")
+    ax.set_aspect("equal"); ax.axis("off"); ax.set_title(title, fontsize=10)
 
 
 def main():
@@ -118,89 +103,96 @@ def main():
     hmm = build_hidden_markov_model("mess3", MESS3_PARAMS)
     vocab = hmm.vocab_size
     rng = np.random.default_rng(SEED)
-    tm = np.array(mess3(**MESS3_PARAMS))
-    true_eig = np.sort(np.linalg.eigvals(tm[0]).real)
+    model, context_len = load(CKPT, device)
 
-    # one-step MSE at each training checkpoint (panel D, training bars)
-    train_mse = []
-    final = None
-    for label, path in CKPTS:
-        model, context_len, step = load(path, device)
-        resid, soft, belief, pp, max_len = U.collect_prefix_features_enumerated(model, hmm, context_len, device)
-        basis, ops, (rows, X, P, Yc, Wt) = recover(resid, soft, pp, max_len, vocab)
-        train_mse.append((label, onestep_mse(X, P, Yc, Wt, basis, ops)))
-        print(f"step {label}: one-step MSE = {train_mse[-1][1]:.5f}")
-        final = (resid, soft, belief, pp, max_len, basis, ops, X, P, Yc, Wt)
-
-    resid, soft, belief, pp, max_len, basis, ops, X, P, Yc, Wt = final
+    resid, soft, belief, pp, max_len = U.collect_prefix_features_enumerated(model, hmm, context_len, device)
     seqs = [s for s in resid if s in belief]
-    true_b = np.array([belief[s] for s in seqs])
-    true_xy = U.simplex_to_xy(true_b)
-    color = np.clip(true_b, 0, 1)
-    wcol = np.array([pp[s] for s in seqs])
-    Xfull = np.stack([resid[s] for s in seqs])
-    eig_rec = np.sort(np.linalg.eigvals(ops[0]).real)
+    Y = np.array([belief[s] for s in seqs])
+    Xact = np.stack([resid[s] for s in seqs])
+    w = np.array([pp[s] for s in seqs])
+    rgb = np.clip(Y, 0, 1)
 
-    # --- B: cross-validation via a held-out TRANSITION split, shown by rollout ---
-    # Fit subspace+operators on 80% of transitions, evaluate one-step MSE on the
-    # held-out 20%, and show the geometry the held-out-fit operators GENERATE
-    # (dense, no held-out-prefix sparsity).
-    tperm = rng.permutation(X.shape[0])
-    ntr = int(0.8 * X.shape[0])
-    ti, vi = tperm[:ntr], tperm[ntr:]
-    basis_cv = U.predictive_cca(X[ti], P[ti], Yc[ti], Wt[ti])[0][:, :LATENT_D]
+    # shared prefix split
+    is_tr = rng.random(len(seqs)) < TRAIN_FRAC
+    tr = np.where(is_tr)[0]; te = np.where(~is_tr)[0]
+    tr_keys = [seqs[i] for i in tr]
+    print(f"split: train prefixes={len(tr)}  held-out test prefixes={len(te)}")
+
+    # ===================== SUPERVISED (decode) =====================
+    sup_full = LinearRegression().fit(Xact, Y)
+    sup_rec_mse = mse(sup_full.predict(Xact), Y)
+    sup_cv = LinearRegression().fit(Xact[tr], Y[tr])
+    sup_cv_pred = sup_cv.predict(Xact[te])
+    sup_cv_mse = mse(sup_cv_pred, Y[te])
+    Ysh = Y[rng.permutation(len(seqs))]
+    sup_sh_pred = LinearRegression().fit(Xact, Ysh).predict(Xact)
+    sup_sh_mse = mse(sup_sh_pred, Y)
+    sup_cv_xy = U.simplex_to_xy(sup_cv_pred)
+    sup_sh_xy = U.simplex_to_xy(sup_sh_pred)
+
+    # ===================== UNSUPERVISED (raw-activation projection) =====================
+    basis_full, n_full = recover_basis(resid, soft, pp, max_len, vocab)
+    unsup_rec_mse = decode_mse(Xact @ basis_full, Y, Xact @ basis_full, Y)
+    basis_tr, n_tr = recover_basis({k: resid[k] for k in tr_keys}, {k: soft[k] for k in tr_keys},
+                                   {k: pp[k] for k in tr_keys}, max_len, vocab)
+    # CV visual: train-fit plane + affine (no test peeking), applied to held-out activations
+    proj_tr = Xact[tr] @ basis_tr
+    mu, comp = fit_plane(proj_tr)
+    xy_tr = (proj_tr - mu) @ comp
+    M = fit_affine(xy_tr, U.simplex_to_xy(Y[tr]), w[tr])
+    unsup_cv_xy = apply_affine((Xact[te] @ basis_tr - mu) @ comp, M)
+    unsup_cv_mse = decode_mse(Xact[tr] @ basis_tr, Y[tr], Xact[te] @ basis_tr, Y[te])
+    print(f"unsup transitions: full={n_full}  train={n_tr}")
+    # Shuffle: break the dynamics, refit subspace, project all activations
+    _, Xt, Pt, Yct, Wtt = U.build_transitions(resid, soft, pp, max_len, vocab)
+    perm = rng.permutation(Xt.shape[0])
+    basis_sh = U.predictive_cca(Xt, Pt[perm], Yct[perm], Wtt)[0][:, :LATENT_D]
     try:
-        basis_cv = U.als_refine_basis(X[ti], P[ti], Yc[ti], Wt[ti], basis_cv, LATENT_D)
+        basis_sh = U.als_refine_basis(Xt, Pt[perm], Yct[perm], Wtt, basis_sh, LATENT_D)
     except Exception:
         pass
-    ops_cv = U.fit_operators(X[ti] @ basis_cv, P[ti], Yc[ti] @ basis_cv, Wt[ti])[0]
-    cv_mse = onestep_mse(X[vi], P[vi], Yc[vi], Wt[vi], basis_cv, ops_cv)
-    cv_img = rollout_img(resid, basis_cv, ops_cv, max_len, vocab, seqs, belief, pp)
-    print(f"CV: train transitions = {len(ti)}  held-out = {len(vi)}")
+    proj_sh = Xact @ basis_sh
+    mu_s, comp_s = fit_plane(proj_sh)
+    xy_s = (proj_sh - mu_s) @ comp_s
+    Ms = fit_affine(xy_s, U.simplex_to_xy(Y), w)
+    unsup_sh_xy = apply_affine(xy_s, Ms)
+    unsup_sh_mse = decode_mse(Xact @ basis_sh, Y, Xact @ basis_sh, Y)
 
-    # --- C: shuffle the parent->future pairing, refit, shown by rollout ---
-    perm = rng.permutation(X.shape[0])      # permute future rows w.r.t. past -> breaks dynamics
-    basis_sh = U.predictive_cca(X, P[perm], Yc[perm], Wt)[0][:, :LATENT_D]
-    try:
-        basis_sh = U.als_refine_basis(X, P[perm], Yc[perm], Wt, basis_sh, LATENT_D)
-    except Exception:
-        pass
-    ops_sh = U.fit_operators(X @ basis_sh, P[perm], Yc[perm] @ basis_sh, Wt)[0]
-    eig_sh = np.sort(np.linalg.eigvals(ops_sh[0]).real)
-    sh_mse = onestep_mse(X, P, Yc, Wt, basis_sh, ops_sh)  # shuffle operators vs REAL dynamics
-    sh_img = rollout_img(resid, basis_sh, ops_sh, max_len, vocab, seqs, belief, pp)
-    print(f"one-step MSE  recovery={train_mse[-1][1]:.5f}  CV={cv_mse:.5f}  shuffle={sh_mse:.5f}")
-    print(f"eig: true={np.round(true_eig,3)}  recovery={np.round(eig_rec,3)}  shuffle={np.round(eig_sh,3)}")
+    print(f"belief MSE  sup: rec={sup_rec_mse:.4f} cv={sup_cv_mse:.4f} shuf={sup_sh_mse:.4f}")
+    print(f"belief MSE  uns: rec={unsup_rec_mse:.4f} cv={unsup_cv_mse:.4f} shuf={unsup_sh_mse:.4f}")
 
-    # ------------------------------- plot ------------------------------- #
-    fig = plt.figure(figsize=(15, 5))
-    gs = fig.add_gridspec(1, 3, width_ratios=[1, 1, 1.5])
-    axB, axC, axD = fig.add_subplot(gs[0]), fig.add_subplot(gs[1]), fig.add_subplot(gs[2])
+    # ===================== plot =====================
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes[0, 0].imshow(U.rasterize_simplex(sup_cv_xy, rgb[te], px=2), extent=EXT, origin="lower")
+    draw_triangle(axes[0, 0], f"Cross Validation (MSE {sup_cv_mse:.4f})")
+    axes[0, 1].imshow(U.rasterize_simplex(sup_sh_xy, rgb, px=2), extent=EXT, origin="lower")
+    draw_triangle(axes[0, 1], f"Shuffle Control (MSE {sup_sh_mse:.4f})")
+    axes[1, 0].imshow(U.rasterize_simplex(unsup_cv_xy, rgb[te], px=2), extent=EXT, origin="lower")
+    draw_triangle(axes[1, 0], f"Cross Validation (MSE {unsup_cv_mse:.4f})")
+    axes[1, 1].imshow(U.rasterize_simplex(unsup_sh_xy, rgb, px=2), extent=EXT, origin="lower")
+    draw_triangle(axes[1, 1], f"Shuffle Control (MSE {unsup_sh_mse:.4f})")
 
-    axB.imshow(cv_img, extent=EXT, origin="lower"); draw_triangle(axB)
-    axB.set_title("Cross Validation\n(held-out dynamics, operator rollout)")
+    for r, (rec, cv, sh) in enumerate([(sup_rec_mse, sup_cv_mse, sup_sh_mse),
+                                       (unsup_rec_mse, unsup_cv_mse, unsup_sh_mse)]):
+        ax = axes[r, 2]
+        labels = ["Recovery", "Cross Val", "Shuffle"]
+        vals = [rec, cv, sh]
+        ax.barh([2, 1, 0], vals, color=["#4C72B0", "#55A868", "#937860"])
+        for y, v in zip([2, 1, 0], vals):
+            ax.text(v + max(vals) * 0.01, y, f"{v:.4f}", va="center", fontsize=9)
+        ax.set_yticks([2, 1, 0]); ax.set_yticklabels(labels)
+        ax.set_xlabel("belief-reconstruction MSE")
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.set_title("error")
 
-    axC.imshow(sh_img, extent=EXT, origin="lower"); draw_triangle(axC)
-    axC.set_title("Shuffle Control\n(broken dynamics, operator rollout)")
-    axC.text(0.5, -0.02,
-             f"eig(A$^x$): true {np.round(true_eig,2)}\nrecovery {np.round(eig_rec,2)}  vs  shuffle {np.round(eig_sh,2)}",
-             ha="center", va="top", transform=axC.transAxes, fontsize=8)
-
-    labels = [f"step {l}" for l, _ in train_mse] + ["Cross Val", "Shuffle"]
-    vals = [m for _, m in train_mse] + [cv_mse, sh_mse]
-    colors = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3", "#937860"]
-    ypos = np.arange(len(vals))[::-1]
-    axD.barh(ypos, vals, color=colors)
-    for y, v in zip(ypos, vals):
-        axD.text(v + max(vals) * 0.01, y, f"{v:.4f}", va="center", fontsize=9)
-    axD.set_yticks(ypos); axD.set_yticklabels(labels)
-    axD.set_xlabel("one-step prediction MSE (rescaled)")
-    axD.set_title("OOM recovery vs. controls")
-    axD.spines[["top", "right"]].set_visible(False)
-
-    fig.suptitle("Belief-state geometry is nontrivial  (Mess3, unsupervised OOM)", fontsize=14)
+    axes[0, 0].text(-0.18, 0.5, "Supervised\n(belief decode)", transform=axes[0, 0].transAxes,
+                    rotation=90, va="center", ha="center", fontsize=12)
+    axes[1, 0].text(-0.18, 0.5, "Unsupervised\n(raw activations)", transform=axes[1, 0].transAxes,
+                    rotation=90, va="center", ha="center", fontsize=12)
+    fig.suptitle("Belief-state geometry is nontrivial — supervised vs. unsupervised, raw activations  (Mess3)\n"
+                 f"shared 80/20 prefix split, same {len(te)}-prefix held-out set", fontsize=13)
     out = FIG_DIR / "fig08_unsupervised_controls_mess3.png"
-    fig.savefig(out, dpi=200, bbox_inches="tight", facecolor="white")
+    fig.savefig(out, dpi=190, bbox_inches="tight", facecolor="white")
     print(f"saved -> {out}")
 
 
