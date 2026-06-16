@@ -139,23 +139,26 @@ def main():
     flat_idx = idx.reshape(-1)
     colors = distinct_colors(len(B36))
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(xy[:, 0], xy[:, 1], s=2, c=colors[flat_idx], alpha=0.25, edgecolors="none")
-    # centre of mass per ground-truth belief state (large dots)
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11, 5.6))
+    # left: ground truth (36 belief states)
+    ax0.scatter(tgt_xy[:, 0], tgt_xy[:, 1], c=colors, s=90, edgecolors="white", linewidths=0.5)
+    ax0.set_title("Ground Truth Belief Geometry  (RRXOR)")
+    # right: residual-stream representation, with ground-truth rings overlaid
+    ax1.scatter(xy[:, 0], xy[:, 1], s=2, c=colors[flat_idx], alpha=0.25, edgecolors="none")
     for s in range(len(B36)):
         m = flat_idx == s
         if m.any():
-            com = xy[m].mean(0)
-            ax.scatter(com[0], com[1], s=90, c=[colors[s]], edgecolors="black", linewidths=0.6, zorder=3)
-    ax.set_title("Residual Stream Belief Representation  (RRXOR)")
-    ax.set_xlabel("PCA 1"); ax.set_ylabel("PCA 3"); ax.set_aspect("equal")
-    ax.spines[["top", "right"]].set_visible(False)
-    # match fig09's axes: autoscale to the 36 ground-truth points with matplotlib's 5% margin
-    for set_lim, v in ((ax.set_xlim, tgt_xy[:, 0]), (ax.set_ylim, tgt_xy[:, 1])):
-        lo, hi = v.min(), v.max(); pad = 0.05 * (hi - lo)
-        set_lim(lo - pad, hi + pad)
+            ax1.scatter(*xy[m].mean(0), s=90, c=[colors[s]], edgecolors="black", linewidths=0.6, zorder=3)
+    ax1.scatter(tgt_xy[:, 0], tgt_xy[:, 1], s=150, facecolors="none", edgecolors="0.6", linewidths=1.0)
+    ax1.set_title("Residual Stream Belief Representation  (RRXOR)")
+    for ax in (ax0, ax1):
+        ax.set_xlabel("PCA 1"); ax.set_ylabel("PCA 3"); ax.set_aspect("equal")
+        ax.spines[["top", "right"]].set_visible(False)
+        for set_lim, v in ((ax.set_xlim, tgt_xy[:, 0]), (ax.set_ylim, tgt_xy[:, 1])):
+            lo, hi = v.min(), v.max(); pad = 0.05 * (hi - lo)
+            set_lim(lo - pad, hi + pad)
     out = FIG_DIR / "fig10_rrxor_residual_representation.png"
-    fig.savefig(out, dpi=200, bbox_inches="tight", facecolor="white")
+    fig.tight_layout(); fig.savefig(out, dpi=200, bbox_inches="tight", facecolor="white")
     print(f"saved -> {out}")
 
 
