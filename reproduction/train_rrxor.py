@@ -42,7 +42,11 @@ LOG_EVERY = 500
 CKPT_EVERY = 5_000
 BLOCK_STEPS = 2_000            # generate this many steps' worth of the stream per jax.lax.scan
 N_TOKENS = BLOCK_STEPS * BATCH_SIZE * (CONTEXT_LEN + 1)   # tokens per generated block
-OPTIMAL_LOSS = float(2 * np.log(2) / 3)  # 0.4621 nats: 2 random + 1 deterministic token per RRXOR triplet
+# Min achievable TRAINING loss = the myopic (windowed) entropy: the average over context
+# lengths 1..n_ctx of H(next token | context), from a stationary start. For RRXOR this is
+# 0.5782 nats (NOT the 0.4621 asymptotic entropy rate 2ln2/3 — the loss averages short
+# contexts, where the belief hasn't synchronised and entropy is near ln2).
+OPTIMAL_LOSS = 0.5782
 
 OUT_DIR = Path(__file__).parent
 MODEL_DIR = OUT_DIR / "models"
