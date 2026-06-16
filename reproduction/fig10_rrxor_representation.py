@@ -129,6 +129,7 @@ def main():
     # project with the panel-B PCA (fit on the 36 ground-truth beliefs), symmetric PC1/PC3
     pca = PCA(n_components=4).fit(B36)
     xy = pca.transform(pred)[:, [0, 2]]
+    tgt_xy = pca.transform(B36)[:, [0, 2]]          # fig09 ground-truth projection (for matching axes)
     flat_idx = idx.reshape(-1)
     colors = distinct_colors(len(B36))
 
@@ -143,6 +144,10 @@ def main():
     ax.set_title("Residual Stream Belief Representation  (RRXOR)")
     ax.set_xlabel("PCA 1"); ax.set_ylabel("PCA 3"); ax.set_aspect("equal")
     ax.spines[["top", "right"]].set_visible(False)
+    # match fig09's axes: autoscale to the 36 ground-truth points with matplotlib's 5% margin
+    for set_lim, v in ((ax.set_xlim, tgt_xy[:, 0]), (ax.set_ylim, tgt_xy[:, 1])):
+        lo, hi = v.min(), v.max(); pad = 0.05 * (hi - lo)
+        set_lim(lo - pad, hi + pad)
     out = FIG_DIR / "fig10_rrxor_residual_representation.png"
     fig.savefig(out, dpi=200, bbox_inches="tight", facecolor="white")
     print(f"saved -> {out}")
