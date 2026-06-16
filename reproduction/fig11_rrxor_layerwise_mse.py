@@ -1,8 +1,8 @@
 """Figure 7E reproduction: belief-regression MSE per activation type.
 
 For RRXOR and Mess3, regress each activation type onto the ground-truth belief and
-report the MSE:  Embed, Layer 1..4 (blocks.k.ln1.hook_normalized), LN Final
-(ln_final.hook_normalized), and Concat (all of them concatenated).
+report the MSE:  Embed, Layer 1..4 (blocks.k.hook_resid_post = the residual stream
+after each block), LN Final (ln_final.hook_normalized), and Concat (all concatenated).
 
 The paper's point: for RRXOR the geometry is spread across layers, so each single
 layer has high MSE but the Concat is low; for Mess3 every layer already carries it
@@ -83,7 +83,7 @@ def load_model(path, device):
 
 def activation_mses(model, seqs, bels, device):
     nL = model.cfg.n_layers
-    hooks = ["hook_embed"] + [f"blocks.{i}.ln1.hook_normalized" for i in range(nL)] + ["ln_final.hook_normalized"]
+    hooks = ["hook_embed"] + [f"blocks.{i}.hook_resid_post" for i in range(nL)] + ["ln_final.hook_normalized"]
     inp = torch.from_numpy(seqs).to(device)
     cache_acc = {h: [] for h in hooks}
     for i in range(0, len(inp), 4096):
@@ -99,7 +99,7 @@ def activation_mses(model, seqs, bels, device):
 
     labels = ["Embed"] + [f"Layer {i+1}" for i in range(nL)] + ["LN Final", "Concat"]
     vals = [mse(acts["hook_embed"])]
-    vals += [mse(acts[f"blocks.{i}.ln1.hook_normalized"]) for i in range(nL)]
+    vals += [mse(acts[f"blocks.{i}.hook_resid_post"]) for i in range(nL)]
     vals += [mse(acts["ln_final.hook_normalized"])]
     vals += [mse(np.concatenate(list(acts.values()), axis=-1))]
     return labels, vals

@@ -9,10 +9,10 @@ belief to 0) -- so no process knowledge beyond vocab + the model's softmax is us
 
 FINDING: the unsupervised OOM CANNOT recover RRXOR's belief geometry. Even in the
 most generous setting (uniform reachability weights, PCA pre-reduction, best d), the
-belief decoded from the unsupervised subspace plateaus at R^2 ~ 0.38, far below the
-supervised concat ceiling (0.82) and Mess3's 0.998. Three compounding, quantified
-reasons -- the unsupervised mirror of the paper's central RRXOR point (belief
-geometry is distributed and weakly linear):
+belief decoded from the unsupervised subspace plateaus at R^2 ~ 0.41, far below the
+supervised residual-stream concat ceiling (0.86) and Mess3's 0.998. Three compounding,
+quantified reasons -- the unsupervised mirror of the paper's central RRXOR point
+(belief geometry is distributed and weakly linear):
   1. RRXOR's activations are near-deterministic given the prefix, so the CCA
      canonical correlations all saturate at 1.0 -- the predictive-correlation
      ranking that isolates belief on Mess3 carries no signal here.
@@ -20,7 +20,7 @@ geometry is distributed and weakly linear):
      activation-space echo of the paper's "spread across layers" (panel E).
   3. RRXOR's determinism gives a tiny effective sample size (~77 under probability
      weighting): too few belief states to estimate a high-dim subspace target-free.
-Supervised regression still reaches 0.82 because it has belief targets, all 384 dims
+Supervised regression still reaches 0.86 because it has belief targets, all 384 dims
 and 1046 equally-weighted prefixes; the unsupervised estimator has none of these.
 
 The figure documents this: belief-decode R^2 vs subspace dimension (plateaus low),
@@ -101,7 +101,7 @@ def load_model(device):
 def collect(model, device):
     """All token strings (len 1..MAX_LEN): concat last-pos activation, softmax, belief, P(w)."""
     nL = model.cfg.n_layers
-    hooks = ["hook_embed"] + [f"blocks.{i}.ln1.hook_normalized" for i in range(nL)] + ["ln_final.hook_normalized"]
+    hooks = ["hook_embed"] + [f"blocks.{i}.hook_resid_post" for i in range(nL)] + ["ln_final.hook_normalized"]
     resid, soft, belief, pp = {}, {}, {}, {}
     for L in range(1, MAX_LEN + 1):
         strs = np.array(list(itertools.product([0, 1], repeat=L)), dtype=np.int64)
