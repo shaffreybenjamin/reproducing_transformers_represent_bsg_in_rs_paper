@@ -23,6 +23,7 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
 import unsupervised_belief_oom as U
+import fig14_observable_oom as F14
 
 MESS3_PARAMS = {"x": 0.05, "a": 0.85}
 TOK_PER_STEP = 64 * 10  # batch x context
@@ -75,12 +76,9 @@ def main():
         axes[0, col].imshow(U.rasterize_simplex(sup_xy, color, px=2, auto=True), origin="lower")
 
         # --- bottom: unsupervised raw activations in the recovered subspace ---
-        rows, X, P, Yc, Wt = U.build_transitions(resid, soft, prefix_prob, max_len, vocab)
-        basis = U.predictive_cca(X, P, Yc, Wt)[0][:, :LATENT_D]
-        try:
-            basis = U.als_refine_basis(X, P, Yc, Wt, basis, LATENT_D)
-        except Exception as exc:  # early checkpoints can be ill-conditioned
-            print(f"  step {step}: ALS skipped ({exc}); using CCA basis")
+        # spectral-OOM + P(w) (consistent with the rest of the unsupervised section)
+        reach = {w: True for w in resid}
+        basis = F14.observable_subspace(resid, soft, reach, vocab, wmap=prefix_prob)[4][:, :LATENT_D]
         raw_xy = U.plane_coords(Xfull @ basis)
         raw_aligned, _ = U.affine_align(raw_xy, true_xy, wcol)
         axes[1, col].imshow(U.rasterize_simplex(raw_aligned, color, px=2, auto=True), origin="lower")
@@ -90,7 +88,7 @@ def main():
         print(f"col {col}: step {step}, {len(seqs)} prefixes")
 
     axes[0, 0].set_ylabel("Supervised\n(residual stream)", fontsize=12)
-    axes[1, 0].set_ylabel("Unsupervised\n(raw activations)", fontsize=12)
+    axes[1, 0].set_ylabel("Unsupervised\n(spectral-OOM subspace)", fontsize=12)
     for ax in axes.ravel():
         ax.set_xticks([])
         ax.set_yticks([])

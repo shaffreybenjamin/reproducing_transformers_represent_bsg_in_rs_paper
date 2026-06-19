@@ -28,11 +28,14 @@ from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
 import unsupervised_belief_oom as U
+import fig14_observable_oom as F14
 
 MESS3_PARAMS = {"x": 0.05, "a": 0.85}
 LATENT_D = 3
-TRAIN_FRAC = 0.8
+SUP_FRAC = 0.3          # 30/70 for both: holds out 70% -- rigorous yet viable for each method
+UNS_FRAC = 0.3          # (unsupervised training unit is a transition, parent+children, ~f^4)
 SEED = 0
+OUT_NAME = "fig08_unsupervised_controls_mess3.png"
 
 OUT_DIR = Path(__file__).parent
 MODEL_DIR = OUT_DIR / "models"
@@ -57,13 +60,10 @@ def load(path, device):
 
 
 def recover_basis(resid, soft, pp, max_len, vocab, d=LATENT_D):
-    rows, X, P, Yc, Wt = U.build_transitions(resid, soft, pp, max_len, vocab)
-    basis = U.predictive_cca(X, P, Yc, Wt)[0][:, :d]
-    try:
-        basis = U.als_refine_basis(X, P, Yc, Wt, basis, d)
-    except Exception:
-        pass
-    return basis, len(rows)
+    # observability-OOM + P(w) subspace (consistent with the rest of the unsupervised section)
+    reach = {w: True for w in resid}
+    rows, A, P, Gs, Uobs, sv = F14.observable_subspace(resid, soft, reach, vocab, wmap=pp)
+    return Uobs[:, :d], len(rows)
 
 
 def fit_plane(pts):
@@ -151,33 +151,37 @@ def main():
 
     resid, soft, belief, pp, max_len, seqs, Y, Xact = fin
     w = np.array([pp[s] for s in seqs]); rgb = np.clip(Y, 0, 1)
-    is_tr = rng.random(len(seqs)) < TRAIN_FRAC
-    tr = np.where(is_tr)[0]; te = np.where(~is_tr)[0]
-    tr_keys = [seqs[i] for i in tr]
-    print(f"split: train={len(tr)} test={len(te)}")
+    # INDEPENDENT splits: each method on the toughest split it can support (not a shared split).
+    sup_is_tr = rng.random(len(seqs)) < SUP_FRAC
+    sup_tr, sup_te = np.where(sup_is_tr)[0], np.where(~sup_is_tr)[0]
+    uns_is_tr = rng.random(len(seqs)) < UNS_FRAC
+    uns_tr, uns_te = np.where(uns_is_tr)[0], np.where(~uns_is_tr)[0]
+    uns_tr_keys = [seqs[i] for i in uns_tr]
+    print(f"supervised split: train={len(sup_tr)} test={len(sup_te)}   "
+          f"unsupervised split: train={len(uns_tr)} test={len(uns_te)}")
 
-    # supervised CV + shuffle (final model)
-    sup_cv = LinearRegression().fit(Xact[tr], Y[tr])
-    sup_cv_pred = sup_cv.predict(Xact[te]); sup_cv_mse = mse(sup_cv_pred, Y[te])
+    # supervised CV + shuffle (final model), 20/80
+    sup_cv = LinearRegression().fit(Xact[sup_tr], Y[sup_tr])
+    sup_cv_pred = sup_cv.predict(Xact[sup_te]); sup_cv_mse = mse(sup_cv_pred, Y[sup_te])
     sup_sh_pred = LinearRegression().fit(Xact, Y[rng.permutation(len(seqs))]).predict(Xact)
     sup_sh_mse = mse(sup_sh_pred, Y)
     sup_cv_xy = U.simplex_to_xy(sup_cv_pred); sup_sh_xy = U.simplex_to_xy(sup_sh_pred)
 
-    # unsupervised CV + shuffle (final model)
-    basis_tr, n_tr = recover_basis({k: resid[k] for k in tr_keys}, {k: soft[k] for k in tr_keys},
-                                   {k: pp[k] for k in tr_keys}, max_len, vocab)
-    mu, comp = fit_plane(Xact[tr] @ basis_tr)
-    xy_tr = (Xact[tr] @ basis_tr - mu) @ comp
-    M = fit_affine(xy_tr, U.simplex_to_xy(Y[tr]), w[tr])
-    unsup_cv_xy = apply_affine((Xact[te] @ basis_tr - mu) @ comp, M)
-    unsup_cv_mse = decode_mse(Xact[tr] @ basis_tr, Y[tr], Xact[te] @ basis_tr, Y[te])
-    _, Xt, Pt, Yct, Wtt = U.build_transitions(resid, soft, pp, max_len, vocab)
-    perm = rng.permutation(Xt.shape[0])
-    basis_sh = U.predictive_cca(Xt, Pt[perm], Yct[perm], Wtt)[0][:, :LATENT_D]
-    try:
-        basis_sh = U.als_refine_basis(Xt, Pt[perm], Yct[perm], Wtt, basis_sh, LATENT_D)
-    except Exception:
-        pass
+    # unsupervised CV + shuffle (final model), 40/60
+    basis_tr, n_tr = recover_basis({k: resid[k] for k in uns_tr_keys}, {k: soft[k] for k in uns_tr_keys},
+                                   {k: pp[k] for k in uns_tr_keys}, max_len, vocab)
+    mu, comp = fit_plane(Xact[uns_tr] @ basis_tr)
+    xy_tr = (Xact[uns_tr] @ basis_tr - mu) @ comp
+    M = fit_affine(xy_tr, U.simplex_to_xy(Y[uns_tr]), w[uns_tr])
+    unsup_cv_xy = apply_affine((Xact[uns_te] @ basis_tr - mu) @ comp, M)
+    unsup_cv_mse = decode_mse(Xact[uns_tr] @ basis_tr, Y[uns_tr], Xact[uns_te] @ basis_tr, Y[uns_te])
+    # shuffle control: permute the softmax/future w.r.t. activations (the unsupervised analogue
+    # of the supervised belief-label shuffle), then run the same observability-OOM recovery.
+    keys = list(resid)
+    permk = rng.permutation(len(keys))
+    soft_sh = {keys[i]: soft[keys[permk[i]]] for i in range(len(keys))}
+    reach_sh = {w: True for w in resid}
+    basis_sh = F14.observable_subspace(resid, soft_sh, reach_sh, vocab, wmap=pp)[4][:, :LATENT_D]
     mu_s, comp_s = fit_plane(Xact @ basis_sh)
     xy_s = (Xact @ basis_sh - mu_s) @ comp_s
     unsup_sh_xy = apply_affine(xy_s, fit_affine(xy_s, U.simplex_to_xy(Y), w))
@@ -190,9 +194,9 @@ def main():
     gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 1.4], hspace=0.25, wspace=0.3)
     bar_labels = [l for l, _ in CKPTS] + ["Cross Val", "Shuffle"]
     rows = [
-        ("Supervised\n(belief decode)", sup_cv_xy, rgb[te], sup_cv_mse, sup_sh_xy, rgb, sup_sh_mse,
+        ("Supervised\n(belief decode)", sup_cv_xy, rgb[sup_te], sup_cv_mse, sup_sh_xy, rgb, sup_sh_mse,
          sup_train + [sup_cv_mse, sup_sh_mse]),
-        ("Unsupervised\n(raw activations)", unsup_cv_xy, rgb[te], unsup_cv_mse, unsup_sh_xy, rgb, unsup_sh_mse,
+        ("Unsupervised\n(raw activations)", unsup_cv_xy, rgb[uns_te], unsup_cv_mse, unsup_sh_xy, rgb, unsup_sh_mse,
          uns_train + [unsup_cv_mse, unsup_sh_mse]),
     ]
     for r, (rlabel, cvxy, cvc, cvm, shxy, shc, shm, vals) in enumerate(rows):
@@ -205,9 +209,8 @@ def main():
         sub = gs[r, 2].subgridspec(1, 2, width_ratios=[3, 1], wspace=0.08)
         broken_barh(fig.add_subplot(sub[0]), fig.add_subplot(sub[1]), vals, bar_labels)
 
-    fig.suptitle("Belief-state geometry is nontrivial — supervised vs. unsupervised, raw activations  (Mess3)\n"
-                 f"shared 80/20 prefix split, same {len(te)}-prefix held-out set", fontsize=13)
-    out = FIG_DIR / "fig08_unsupervised_controls_mess3.png"
+    fig.suptitle("Belief-state geometry is nontrivial — supervised vs. unsupervised  (Mess3)", fontsize=13)
+    out = FIG_DIR / OUT_NAME
     fig.savefig(out, dpi=190, bbox_inches="tight", facecolor="white")
     print(f"saved -> {out}")
 

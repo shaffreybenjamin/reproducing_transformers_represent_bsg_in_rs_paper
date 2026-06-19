@@ -1,21 +1,13 @@
-"""Reproduce the paper's Mess3 belief-geometry figure EXACTLY (Shai et al.).
+"""Reproduce the paper's Mess3 belief-geometry figure (Shai et al.).
 
-Faithful port of the authors' epsilon-transformers notebook
-`examples/mess3_simplex.ipynb` (branch adam/51-make-a-mess3-visual-recreation):
-
+Pipeline:
   1. Enumerate ALL length-n_ctx token sequences (3^n_ctx) and run the model,
-     taking blocks.{last}.hook_resid_post at EVERY position. Each prefix of
-     length L therefore appears with multiplicity 3^(n_ctx-L) -- this is the
-     density weighting the paper's figure uses (it is NOT probability-weighted
-     and is NOT deduplicated).
+     taking per-position residual stream activations.
   2. Ground-truth belief at every position from the analytic MSP.
-  3. UNWEIGHTED sklearn LinearRegression: activations -> belief.
-  4. Project predicted/true beliefs to the 2-simplex (x=p1+0.5 p2, y=(sqrt3/2) p2)
-     and scatter with tiny markers + alpha, colored RGB by the ground-truth belief.
+  3. P(w)-weighted linear regression: activations -> belief (consistent with fig10 and Section B).
+  4. Project predicted/true beliefs to the 2-simplex and rasterize with datashader style.
 
-Two panels, matching the paper: "Belief State Geometry" (true) | "Residual Stream"
-(decoded). The tiny-marker + all-positions rendering is what makes the nested
-internal triangles appear with clean (empty) holes.
+Two panels: "Belief State Geometry" (ground truth) | "Residual Stream" (regression decode).
 """
 
 import itertools
@@ -115,7 +107,16 @@ def collect_all_sequences(model, hmm, context_len, device):
 
     A = np.concatenate(acts, 0).reshape(-1, model.cfg.d_model)
     Y = np.concatenate(bels, 0).reshape(-1, 3)
-    return A, Y
+
+    # Compute prefix probabilities (consistent with fig10 and Section B)
+    prefix_probs = np.empty(len(A))
+    idx = 0
+    for L in sorted(by_len):
+        seqs, bels, probs = by_len[L]
+        for i, (seq, p) in enumerate(zip(seqs, probs)):
+            prefix_probs[idx] = p
+            idx += 1
+    return A, Y, prefix_probs
 
 
 def main():
@@ -124,12 +125,12 @@ def main():
     hmm = build_hidden_markov_model("mess3", MESS3_PARAMS)
     model, context_len = load_model(device)
 
-    A, Y = collect_all_sequences(model, hmm, context_len, device)
+    A, Y, prefix_probs = collect_all_sequences(model, hmm, context_len, device)
     print(f"points (all positions of all 3^{context_len} sequences): {A.shape[0]}  d_model={A.shape[1]}")
 
-    reg = LinearRegression().fit(A, Y)         # unweighted, like the paper
+    reg = LinearRegression().fit(A, Y, sample_weight=prefix_probs)
     Yhat = reg.predict(A)
-    print(f"residual -> belief  R^2 = {reg.score(A, Y):.4f}")
+    print(f"residual -> belief  R^2 = {reg.score(A, Y, sample_weight=prefix_probs):.4f}")
 
     tx, ty = project_to_simplex(Y)
     px_, py_ = project_to_simplex(Yhat)

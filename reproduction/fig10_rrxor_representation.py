@@ -125,18 +125,38 @@ def main():
     layer_hooks = [f"blocks.{i}.hook_resid_post" for i in range(model.cfg.n_layers)]
     acts = collect_activations(model, seqs, device, layer_hooks)
 
-    # concat per-layer residual streams -> regress onto belief
     concat = np.concatenate([acts[h] for h in layer_hooks], axis=-1)   # (N, n_ctx, 4*d)
-    X = concat.reshape(-1, concat.shape[-1])
-    Y = beliefs.reshape(-1, NSTATES)
-    pred = LinearRegression().fit(X, Y).predict(X)
-    print(f"concat regression R^2 = {LinearRegression().fit(X, Y).score(X, Y):.4f}")
+
+    # DEDUPLICATE by token prefix and weight each unique prefix by its probability P(w).
+    # Causal attention => every occurrence of a prefix has the identical activation, so we
+    # keep the first occurrence and weight by the summed probability -- the convention of the
+    # post-quantum paper (Riechers et al.): "retain the activation from the first occurrence,
+    # sum probabilities across occurrences." Here P(w) is analytic (product of conditionals).
+    def prob_of(w):
+        b, p = STATIONARY, 1.0
+        for x in w:
+            d = next_dist(b); p *= float(d[x]); b = update(b, x)
+        return p
+    seen = {}
+    for i in range(len(seqs)):
+        for pos in range(N_CTX):
+            w = tuple(int(t) for t in seqs[i][:pos + 1])
+            if w not in seen:
+                seen[w] = (concat[i, pos], beliefs[i, pos], int(idx[i, pos]))
+    prefixes = list(seen)
+    X = np.stack([seen[w][0] for w in prefixes])
+    Y = np.stack([seen[w][1] for w in prefixes])
+    flat_idx = np.array([seen[w][2] for w in prefixes])
+    Wt = np.array([prob_of(w) for w in prefixes])
+    print(f"unique prefixes: {len(prefixes)} (deduped from {len(seqs) * N_CTX} input-positions)")
+    reg = LinearRegression().fit(X, Y, sample_weight=Wt)
+    pred = reg.predict(X)
+    print(f"concat regression R^2 (P(w)-weighted) = {reg.score(X, Y, sample_weight=Wt):.4f}")
 
     # project with the panel-B PCA (fit on the 36 ground-truth beliefs), symmetric PC1/PC3
     pca = PCA(n_components=4).fit(B36)
     xy = pca.transform(pred)[:, [0, 2]]
     tgt_xy = pca.transform(B36)[:, [0, 2]]          # fig09 ground-truth projection (for matching axes)
-    flat_idx = idx.reshape(-1)
     colors = distinct_colors(len(B36))
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11, 5.6))

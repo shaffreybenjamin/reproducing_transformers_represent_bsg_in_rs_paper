@@ -49,21 +49,27 @@ MODEL_DIR = OUT_DIR / "models"
 FIG_DIR = OUT_DIR / "figures"
 
 
-def observable_subspace(resid, soft, reach, vocab, depth=3):
+def observable_subspace(resid, soft, reach, vocab, depth=3, wmap=None):
     """Observability matrix O = [C, G_x C, G_x G_y C, ...]; its SVD gives candidate
     belief directions ordered by strength. Columns of O are the rescaled multi-step
-    observables P(x..|w)*P(.|w x..), each LINEAR in belief, spanning belief as depth grows."""
+    observables P(x..|w)*P(.|w x..), each LINEAR in belief, spanning belief as depth grows.
+
+    wmap (optional): {prefix: P(w)} sample weights for the C/G_x ridge regressions, so the
+    operators -- and hence the subspace -- are estimated toward high-probability prefixes
+    (the post-quantum paper's P(w)-weighting). None => uniform (backwards-compatible)."""
     rows = [w for w in resid if reach[w] and all((w + (x,)) in resid and reach[w + (x,)]
                                                   for x in range(vocab) if soft[w][x] > EPS)]
     A = np.stack([resid[w] for w in rows]); P = np.stack([soft[w] for w in rows])
+    sw = None if wmap is None else np.array([max(float(wmap.get(w, 0.0)), 1e-12) for w in rows])
 
-    C = Ridge(alpha=RIDGE, fit_intercept=False).fit(A, P).coef_.T          # (D, V) observable
+    C = Ridge(alpha=RIDGE, fit_intercept=False).fit(A, P, sample_weight=sw).coef_.T   # (D, V)
     Gs = []
     for x in range(vocab):
         m = np.array([soft[w][x] > EPS for w in rows])
         child = np.stack([resid[rows[i] + (x,)] for i in np.where(m)[0]])
         tgt = P[m, x][:, None] * child
-        Gs.append(Ridge(alpha=RIDGE, fit_intercept=False).fit(A[m], tgt).coef_.T)  # (D, D)
+        swm = None if sw is None else sw[m]
+        Gs.append(Ridge(alpha=RIDGE, fit_intercept=False).fit(A[m], tgt, sample_weight=swm).coef_.T)
 
     cols, frontier = [C], [C]                                              # observability matrix
     for _ in range(depth - 1):
@@ -72,6 +78,21 @@ def observable_subspace(resid, soft, reach, vocab, depth=3):
     O = np.hstack(cols)
     U, sv, _ = np.linalg.svd(O, full_matrices=False)
     return rows, A, P, Gs, U, sv
+
+
+def analytic_prefix_probs(resid, T, pi):
+    """{prefix: P(w)} via the belief-update product, for transition tensor T and start pi.
+    Forbidden prefixes get 0. Used as the P(w) sample-weights for the subspace/operator fits."""
+    out = {}
+    for w in resid:
+        b, p = np.array(pi, dtype=float), 1.0
+        for x in w:
+            d = np.array([(b @ T[i]).sum() for i in range(T.shape[0])])
+            if d[x] < 1e-12:
+                p = 0.0; break
+            p *= float(d[x]); b = b @ T[x] / d[x]
+        out[w] = p
+    return out
 
 
 def fit_at_dim(rows, A, P, resid, vocab, B):
