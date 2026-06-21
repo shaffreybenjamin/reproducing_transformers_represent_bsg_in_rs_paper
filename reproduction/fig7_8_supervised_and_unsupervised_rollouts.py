@@ -27,7 +27,7 @@ import unsupervised_belief_oom as U
 import fig14_observable_oom as F14
 import fig13_rrxor_unsupervised_oom as F13
 import fig09_rrxor_ground_truth as B9
-import fig23_unified_best as F23
+import fig8_10_unified_best as F23
 
 FIG_DIR = Path(__file__).parent / "figures"
 

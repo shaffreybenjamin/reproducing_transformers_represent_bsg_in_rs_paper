@@ -15,7 +15,7 @@ from sklearn.linear_model import LinearRegression
 from simplexity.generative_processes.builder import build_hidden_markov_model
 import unsupervised_belief_oom as U
 import fig14_observable_oom as F14
-import fig23_unified_best as F23
+import fig8_10_unified_best as F23
 
 FIG_DIR = Path(__file__).parent / "figures"
 D = 3

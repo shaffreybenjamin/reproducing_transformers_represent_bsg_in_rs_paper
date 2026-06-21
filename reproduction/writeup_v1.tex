@@ -152,7 +152,7 @@ The procedure uses only activations, softmax, and the prefix tree.
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig28_mess3_principled.png}
+\includegraphics[width=0.9\textwidth]{fig1_mess3_principled.png}
 \caption{\textbf{Mess3: ground truth, supervised, and unsupervised.}
 Left: ground-truth belief geometry.
 Centre: supervised decode from full $64$-D residual stream ($R^2=0.999$).
@@ -172,7 +172,7 @@ split provides too little data for unsupervised learning; its training unit is a
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.8\textwidth]{fig06_training_progression_mess3.png}
+\includegraphics[width=0.8\textwidth]{fig2_training_progression_mess3.png}
 \caption{\textbf{Mess3 emergence over training.}
 Top: supervised decode at steps $100, 1000, 5000, 10^6$.
 Bottom: spectral-OOM subspace activations (affine-aligned for display).
@@ -182,7 +182,7 @@ Both show identical emergence trajectory.}
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.8\textwidth]{fig08_unsupervised_controls_mess3.png}
+\includegraphics[width=0.8\textwidth]{fig3_unsupervised_controls_mess3.png}
 \caption{\textbf{Mess3 controls: cross-validation and shuffle.}
 Top: supervised.
 Bottom: unsupervised.
@@ -202,7 +202,7 @@ singular spectrum showed no clean elbow for this process.
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig26_rrxor_principled.png}
+\includegraphics[width=0.9\textwidth]{fig4_rrxor_principled.png}
 \caption{\textbf{RRXOR: ground truth, supervised, and unsupervised.}
 Left: ground-truth $36$ belief states (PC1/PC3 plane, display only).
 Centre: supervised decode (per-position $R^2=0.91$).
@@ -229,7 +229,7 @@ well-poised to recover the true belief geometry.
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig34_rrxor_diagnostics_supervised.png}
+\includegraphics[width=0.9\textwidth]{fig5_rrxor_diagnostics_supervised.png}
 \caption{\textbf{RRXOR diagnostics: supervised.}
 Left: per-activation belief-reconstruction MSE.
 Centre/right: belief and next-token distance preservation via hexbin.}
@@ -238,7 +238,7 @@ Centre/right: belief and next-token distance preservation via hexbin.}
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig35_rrxor_diagnostics_unsupervised.png}
+\includegraphics[width=0.9\textwidth]{fig6_rrxor_diagnostics_unsupervised.png}
 \caption{\textbf{RRXOR diagnostics: unsupervised.}
 Same metrics as Figure~\ref{fig:rrxordiag}, but from the recovered spectral-OOM subspace.
 Belief spread is recovered, but next-token distances dominate.}
@@ -323,7 +323,7 @@ errors contract away and the rollout self-corrects
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig29_mess3_supervised_rollout.png}
+\includegraphics[width=0.9\textwidth]{fig7_mess3_supervised_rollout.png}
 \caption{\textbf{Mess3 supervised subspace.}
 Ground truth $|$ supervised decode $|$ operator rollout ($R^2=1.00$).}
 \label{fig:mess3suproll}
@@ -331,7 +331,7 @@ Ground truth $|$ supervised decode $|$ operator rollout ($R^2=1.00$).}
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig23_mess3_unified.png}
+\includegraphics[width=0.9\textwidth]{fig8_mess3_unified.png}
 \caption{\textbf{Mess3 spectral-OOM subspace.}
 Ground truth $|$ recovered subspace (raw) $|$ operator rollout via $\widehat{A}_x$ ($R^2=1.00$).}
 \label{fig:mess3unsuproll}
@@ -350,7 +350,7 @@ states are never reached.
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig29_rrxor_supervised_rollout.png}
+\includegraphics[width=0.9\textwidth]{fig9_rrxor_supervised_rollout.png}
 \caption{\textbf{RRXOR supervised subspace.}
 Ground truth $|$ supervised decode (COM-geom $0.95$) $|$ operator rollout (COM-geom $0.63$;
 extreme states not reached).}
@@ -359,7 +359,7 @@ extreme states not reached).}
 
 \begin{figure}[!ht]
 \centering
-\includegraphics[width=0.9\textwidth]{fig24_rrxor_unified.png}
+\includegraphics[width=0.9\textwidth]{fig10_rrxor_unified.png}
 \caption{\textbf{RRXOR spectral-OOM subspace.}
 Ground truth $|$ recovered subspace (raw, state-level $R^2=0.66$) $|$ operator rollout via
 $\widehat{A}_x$ (state-level $R^2=0.74$; extreme states central).}
