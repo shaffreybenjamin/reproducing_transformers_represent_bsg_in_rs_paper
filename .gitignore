@@ -15,3 +15,11 @@ runpod/config.env
 
 # Local CPU venv for analysis/plotting (created by uv; do not commit)
 .venv/
+
+# LaTeX build artifacts (transient files generated during compilation)
+*.aux
+*.fdb_latexmk
+*.synctex.gz
+*.fls
+*.log
+*.out

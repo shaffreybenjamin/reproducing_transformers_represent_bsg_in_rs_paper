@@ -55,6 +55,8 @@ models.
 The estimator recovers the belief subspace from activations and the network's own
 softmax, using the \emph{observability matrix} of an observable operator model (OOM) \cite{jaeger2000},
 but estimated in activation space. We refer to this estimator as the spectral-OOM.
+This differs from Baum-Welch (EM) \cite{baum1970}, which fits a generative HMM to the token
+sequence rather than reading the representation out of the network.
 
 \paragraph{Linearising the belief update.}
 The network encodes belief affinely, $a(w) = b(w)\Psi + c$, where $\Psi$
@@ -247,14 +249,15 @@ Belief spread is recovered, but next-token distances dominate.}
 
 The belief-state geometry can be recovered unsupervised from activations and softmax alone,
 nearly perfectly for Mess3 ($R^2 \approx 0.998$), but only partially for RRXOR (state-level $R^2 \approx 0.82$).
-The spectral-OOM anchors to next-token predictions (the softmax observable), but RRXOR's belief states exhibit 
-significant next-token degeneracy, i.e. many geometrically distinct states share similar next-token distributions 
-(R$^2$=0.31 from the original paper). It is unclear whether this issue with the spectral-OOM estimator can be fully 
-addressed, as there are no obvious alternative observables satisfying the required properties (linearity in belief, 
-empirical accessibility). A longer context window could mitigate this by providing more data per horizon depth, 
-reducing compounding errors in deep recursion. Success on Mess3 demonstrates the method's viability for processes 
-where belief geometry aligns with observable structure. A natural next experiment is a richly-sampled quantum or 
-post-quantum process where this alignment should hold more generally.
+The spectral-OOM anchors to next-token predictions (the softmax observable), but RRXOR's belief states exhibit
+significant next-token degeneracy because many geometrically distinct states share similar next-token distributions
+($R^2 = 0.31$ from the original paper). It is unclear whether this can be fully addressed, as there are no obvious
+alternative observables satisfying the required properties (linearity in belief, empirical accessibility). A longer
+context window would reduce finite-sample error but not the underlying degeneracy. Success on Mess3 demonstrates the
+method's viability where belief geometry aligns with observable structure, and a richly-sampled quantum or post-quantum
+process is a natural next step. Even if the method never scales to large models, it remains useful across
+the many small models whose belief geometry we can now study to learn what such geometry reveals about what 
+a model has learned.
 
 \appendix
 \section{Observable Operator Models (OOMs): Spectral-OOM Estimator Details}
@@ -315,8 +318,8 @@ itself.
 
 \textbf{Mess3:} the rollout reproduces the full fractal at $R^2 \approx 1.00$ from both supervised
 and unsupervised subspaces (Figures \ref{fig:mess3suproll} and \ref{fig:mess3unsuproll}).
-Mess3's true operators are diagonalisable strict contractions; the fractal is their attractor,
-and the rollout self-corrects.
+Mess3's true operators are diagonalisable strict contractions. The fractal is their attractor, so 
+errors contract away and the rollout self-corrects
 
 \begin{figure}[!ht]
 \centering
@@ -335,11 +338,15 @@ Ground truth $|$ recovered subspace (raw) $|$ operator rollout via $\widehat{A}_
 \end{figure}
 \bigskip
 \noindent\textbf{RRXOR:} the rollout collapses, failing to reach the outer apexes from both supervised
-and unsupervised subspaces.
-This is intrinsic to RRXOR's operator algebra: the true belief-update operators are
-non-diagonalisable (nilpotent/defective), so the belief states are transients of a defective
-semigroup, not an attractor set.
-Hence for RRXOR the raw subspace (main text), not the rollout, is the trustworthy representation.
+and unsupervised subspaces (Figures \ref{fig:rrxorsuproll} and \ref{fig:rrxorunsuproll}).
+This is intrinsic to RRXOR's operator algebra: both of the transition operators
+$T_x$ are non-diagonalisable; the input-$1$ operator is nilpotent
+($T_1^{\,5}=0$), the input-$0$ operator is defective with a repeated
+eigenvalue, so the belief states are transient points the dynamics passes through, not a
+contractive attractor it settles onto and self-corrects toward. The rollout operators $\widehat{A}_x$, 
+fitted to approximate this dynamics, reproduce the same behaviour. With no
+attractor to contract onto, iteration accumulates error and the extreme apex
+states are never reached.
 
 \begin{figure}[!ht]
 \centering
@@ -368,6 +375,9 @@ NeurIPS 2024; arXiv:2405.15943.
 \bibitem{riechers2025} P.~M. Riechers, T.~J. Elliott, A.~S. Shai.
 \emph{Neural networks leverage nominally quantum and post-quantum representations.}
 arXiv preprint arXiv:2507.07432, 2025.
+\bibitem{baum1970} L.~E. Baum, T.~Petrie, G.~Soules, N.~Weiss.
+\emph{A maximization technique occurring in the statistical analysis of probabilistic functions of Markov chains.}
+Annals of Mathematical Statistics 41(1):164--171, 1970.
 \bibitem{jaeger2000} H.~Jaeger.
 \emph{Observable operator models for discrete stochastic time series.}
 Neural Computation 12(6):1371--1398, 2000.
