@@ -42,7 +42,7 @@ LOG_EVERY = 500
 CKPT_EVERY = 5_000
 BLOCK_STEPS = 2_000            # generate this many steps' worth of the stream per jax.lax.scan
 N_TOKENS = BLOCK_STEPS * BATCH_SIZE * (CONTEXT_LEN + 1)   # tokens per generated block
-OPTIMAL_LOSS = 1.0451          # myopic-entropy optimum for these params
+OPTIMAL_LOSS = 1.0143          # optimal windowed CE (myopic entropy avg over ctx 1..10, belief reset per window); old 1.0451 was the unigram/no-context entropy (asymptotic entropy rate = 1.0107)
 
 OUT_DIR = Path(__file__).parent
 MODEL_DIR = OUT_DIR / "models"
