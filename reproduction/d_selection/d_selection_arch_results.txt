@@ -1,0 +1,17 @@
+D-Selection Results: arch
+======================================================================
+True d: 4
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 8
+  Elbow Method:         5
+  MI Saturation:        1
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 6
+  Effective Rank (99%): 8
+  Elbow Method:         9
+  MI Saturation:        1
+  Agreement:            False

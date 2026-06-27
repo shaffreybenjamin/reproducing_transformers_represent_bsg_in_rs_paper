@@ -1,0 +1,17 @@
+D-Selection Results: zero_one_random
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 10
+  Effective Rank (99%): 13
+  Elbow Method:         5
+  MI Saturation:        5
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 5
+  Effective Rank (99%): 7
+  Elbow Method:         6
+  MI Saturation:        1
+  Agreement:            False

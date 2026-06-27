@@ -1,0 +1,340 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small}
+\graphicspath{{figures/}}
+
+\title{\vspace{-2.5em}Figure-by-Figure Methodology:\\
+Belief-State Geometry Recovery in Transformers}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+
+\section*{Overview}
+
+This document provides a detailed explanation of how each figure in the main writeup was generated, including the data pipeline, mathematical operations, and key methodological choices. All figures are produced deterministically from trained models and enumerated data.
+
+---
+
+\section{Section A: Supervised Reproduction}
+
+\subsection{Fig 03: Mess3 Belief Geometry (Ground Truth vs.\ Supervised Decode)}
+
+\paragraph{Data collection pipeline.}
+\begin{equation}
+\text{All sequences} \to \text{Enumerate}(3^{n_{\mathrm{ctx}}}) \to
+\{\text{activations}, \text{beliefs}\}_{\text{all positions}}
+\end{equation}
+
+The script enumerates every possible length-10 token sequence in Mess3 (total $3^{10} = 59049$ sequences). For each sequence, the model's final-layer residual stream is extracted at every position. Ground-truth beliefs come from the analytic mixed-state presentation (MSP) tree, computed symbolically from the transition matrix.
+
+We enumerate all sequences without deduplication, giving each prefix of length $\ell$ a natural occurrence count of $3^{10-\ell}$. Prefix probabilities $P(w)$ are computed analytically as the product of conditional probabilities along the path from root to prefix. Both supervised and unsupervised results throughout the writeup use $P(w)$-weighting for consistency.
+
+\paragraph{Regression and projection.}
+\begin{equation}
+\text{Activations } A(w) \xrightarrow{\text{P(w)-weighted regression}} \text{Beliefs } b(w)
+\quad \Rightarrow \quad \hat{b}(w) = A(w) \, C^{\top}
+\end{equation}
+
+A $P(w)$-weighted linear regression (consistent with Fig.\ 10 and Section B) maps the $59049 \times 64$ activation matrix to the $59049 \times 3$ belief matrix, with each prefix weighted by its probability. The regression coefficient matrix $C^{\top} \in \mathbb{R}^{64 \times 3}$ is used to predict beliefs $\hat{b}$ from activations. Both ground-truth and predicted beliefs are then projected to the 2-simplex using the paper's coordinate system:
+\begin{equation}
+(p_0, p_1, p_2) \mapsto (x, y) = \left(p_1 + 0.5 p_2, \frac{\sqrt{3}}{2} p_2\right)
+\end{equation}
+
+\paragraph{Visualization and metrics.}
+Ground truth and predictions are projected to the simplex and rendered as a dense raster to match the paper's figure style. The reported $R^2 \approx 0.99$ is the regression score on all enumerated points.
+
+---
+
+\subsection{Fig 33: Mess3 Paper Fig.\ 6 Reproduction (Four Checkpoints, Controls, MSE Bars)}
+
+\paragraph{Data: four training checkpoints.}
+Four pre-trained models at different training steps are loaded. For each:
+\begin{equation}
+\text{Checkpoint} \to \text{Enumerate Mess3 prefixes} \to
+\{\text{Activations}, \text{Beliefs}\}_{\text{final position}} \to
+\text{Linear Regression}
+\end{equation}
+
+Each checkpoint enumerates all Mess3 prefixes (up to length 10) and computes per-checkpoint belief-reconstruction MSE on the training set.
+
+\paragraph{Panel A: Training progression.}
+Four datashader-rasterized panels, one per checkpoint. Each panel shows the predicted belief (from that checkpoint's regression) projected to the simplex and rasterized. Early checkpoints show small central blobs (belief not yet differentiated); late checkpoints show the full fractal.
+
+\paragraph{Panel B: Cross-validation.}
+Train on 20% of prefixes, test on 80% held-out. The fractal persists on held-out data, ruling out memorization.
+
+\paragraph{Panel C: Shuffle control.}
+Permute belief labels randomly and refit regression. The geometry collapses to the mean, confirming real structure.
+
+\paragraph{Panel D: MSE bars.}
+Training MSE at each checkpoint, plus cross-validation and shuffle results. Shuffle MSE is dramatically higher, confirming the representation encodes real structure.
+
+---
+
+\subsection{Fig 10: RRXOR Belief Geometry (Supervised Residual Decode)}
+
+\paragraph{Data collection: enumerating the 36 MSP states and positive-probability sequences.}
+\begin{equation}
+\text{Transition matrix } T \to \text{Enumerate MSP states} \to 36 \text{ unique } b(w)
+\end{equation}
+
+First, enumerate the 36 distinct belief states reachable from the root by iterating the belief update $b(wx) = b(w) T^x / (b(w) T^x \mathbf{1})$ until fixpoint. Then enumerate all positive-probability length-10 sequences:
+\begin{equation}
+\text{Enumerate } \to \text{Per-position beliefs} \to \{\text{activations}, \text{beliefs}, \text{state index}\}_{\text{all prefixes}}
+\end{equation}
+
+\paragraph{Prefix deduplication and probability weighting.}
+Each unique prefix appears identically at every position it occurs (causal attention). We deduplicate and weight each prefix by its total probability $P(w)$, following the post-quantum paper convention.
+
+\paragraph{Concatenated residual-stream regression.}
+Concatenate the four layer-wise residual-stream activations:
+\begin{equation}
+\text{Concat} = [a_1(w) \oplus a_2(w) \oplus a_3(w) \oplus a_4(w)] \in \mathbb{R}^{4 \times 64}
+\end{equation}
+
+Regress this concatenation onto the 5-D beliefs using linear regression with sample weights $P(w)$:
+\begin{equation}
+\text{Concat}(w) \xrightarrow{\text{Weighted Linear Regression}} b(w)
+\quad \Rightarrow \quad \hat{b}(w) = \text{Concat}(w) \, C^{\top}
+\end{equation}
+
+The reported $R^2 \approx 0.91$ is the weighted score.
+
+\paragraph{Projection and visualization.}
+Project both ground truth and predictions using PCA (fit on the 36 ground-truth belief states), displaying the PC1/PC3 plane. Show per-state centre of mass $R^2 = 1.00$ to indicate clean state-level geometry.
+
+---
+
+\subsection{Fig 34: RRXOR Diagnostics (Supervised, Layerwise MSE and Distance Preservation)}
+
+\paragraph{Layerwise belief-reconstruction MSE.}
+For each activation type (embedding, each layer's residual post-activation, layer-norm final, and the concatenation of all residuals), regress onto belief and compute MSE:
+\begin{equation}
+\text{MSE}_{\text{layer}} = \frac{1}{N} \sum_{i=1}^{N} \| a_{\text{layer}}(w_i) C_{\text{layer}}^{\top} - b(w_i) \|^2
+\end{equation}
+
+The result is a line plot showing MSE for each layer. RRXOR's belief is spread diffusely across layers (each individual layer has poor MSE); only the concatenation achieves low MSE. Mess3 (control) carries the geometry in every single layer.
+
+\paragraph{Distance preservation: belief and next-token.}
+For the 36 RRXOR belief states, compute pairwise Euclidean distances in three spaces:
+\begin{enumerate}
+\item \textbf{Belief distance:} $d_{\text{belief}}(i, j) = \| b_i - b_j \|_2$ (ground truth).
+\item \textbf{Next-token distance:} $d_{\text{next}}(i, j) = \| \tilde{p}_i - \tilde{p}_j \|_2$ where $\tilde{p}_i = T^{x_i} b_i / \| T^{x_i} b_i \|_1$ (the expected next-token distribution after each state).
+\item \textbf{Representation distance:} $d_{\text{rep}}(i, j)$ = distance between per-state COM predictions (the averaged belief decode from the representation).
+\end{enumerate}
+
+Plot hexbin (log scale) of $d_{\text{belief}}$ vs.\ $d_{\text{rep}}$ (left) and $d_{\text{next}}$ vs.\ $d_{\text{rep}}$ (right). Fit a line and report $R^2$. The supervised representation strongly preserves belief distance ($R^2 \approx 0.78$) but not next-token distance ($R^2 \approx 0.31$), confirming it encodes state-level structure, not immediate next-token logits.
+
+
+---
+
+\section{Section B: Supervised vs.\ Unsupervised Recovery (Observable-OOM Theory)}
+
+\subsection{Fig 28: Mess3 Supervised vs.\ Unsupervised (Identical Pipeline, Different Subspace)}
+
+\paragraph{The key principle: apples-to-apples comparison.}
+
+Both panels use \textit{identical} preprocessing, projection, and rendering; the \textit{only} difference is the affine-map input:
+\begin{equation}
+\text{Supervised:} \quad A(w) \to \mathbb{R}^{64} \xrightarrow{\text{Label-fit}} b(w)
+\quad \text{vs.} \quad
+\text{Unsupervised:} \quad A(w) \xrightarrow{B} \mathbb{R}^{3} \xrightarrow{\text{Label-fit}} b(w)
+\end{equation}
+
+where $B$ is the unsupervised observability-OOM subspace, found from activations + softmax alone (no belief labels used in its derivation).
+
+\paragraph{Unsupervised subspace discovery.}
+
+The observability-OOM subspace is built as follows:
+
+\begin{enumerate}
+\item \textbf{Observable anchor } $C$: ridge-regress activations to the model's next-token softmax $P(\cdot | w)$.
+\begin{equation}
+C = \arg\min_{\tilde{C}} \| A(w) \tilde{C} - P(\cdot | w) \|^2_2 + \lambda \| \tilde{C} \|_2^2
+\end{equation}
+$C \in \mathbb{R}^{64 \times 3}$ (vocab size).
+
+\item \textbf{Rescaled operators } $\{G_x\}_{x=0}^{2}$: the rescaling trick linearizes the projective belief update. Regress activations to $P(x | w) \cdot a(wx)$ (the softmax-weighted child activation):
+\begin{equation}
+G_x = \arg\min_{\tilde{G}_x} \left\| A(w) \tilde{G}_x - P(x | w) \cdot A(wx) \right\|^2_2 + \lambda \| \tilde{G}_x \|_2^2
+\end{equation}
+Each $G_x \in \mathbb{R}^{64 \times 64}$.
+
+\item \textbf{Observability matrix:} stack the multi-step observables
+\begin{equation}
+\mathcal{O} = [C \mid G_x C \mid G_x G_y C \mid G_x G_y G_z C]
+\end{equation}
+where all products are taken for all token pairs. For Mess3 (vocab 3, depth 3), this yields a $64 \times (3 + 9 + 27) = 64 \times 39$ matrix.
+
+\item \textbf{SVD and subspace selection:} $\mathcal{O} = U \Sigma V^{\top}$. The basis $B = U_{:, 1:d}$ (first $d$ columns, the leading $d$-dimensional subspace).
+\end{enumerate}
+
+The singular spectrum drops cleanly at the true latent dimension ($d=3$ for Mess3), allowing automatic order selection.
+
+\paragraph{P(w)-weighting.}
+
+Following the post-quantum paper, the $C$ and $G_x$ regressions are weighted by prefix probability:
+\begin{equation}
+C = \arg\min_{\tilde{C}} \sum_{w} P(w) \| A(w) \tilde{C} - P(\cdot | w) \|^2_2 + \lambda \| \tilde{C} \|_2^2
+\end{equation}
+
+Prefix probabilities are computed analytically: $P(w) = \prod_{i=1}^{|w|} P(w_i | w_{< i})$. This biases the subspace toward high-probability regions of the tree, where the model must be accurate.
+
+\paragraph{Results.}
+Supervised decode ($R^2 = 0.999$) and unsupervised OOM subspace decode ($R^2 = 0.998$) recover the fractal nearly identically, confirming the estimator works for strongly observable processes.
+
+---
+
+\subsection{Fig 06: Mess3 Emergence Over Training (Supervised vs.\ Unsupervised, Row-Wise)}
+
+\paragraph{Design.}
+
+Top row: supervised decode at steps 100, 1,000, 5,000, 1,000,000. Bottom row: unsupervised subspace activations (affine-aligned for display to the simplex). The subspace is unoriented, so affine alignment is display-only and does not affect its content.
+
+\paragraph{Results.}
+Both supervised and unsupervised representations show the same emergence trajectory: early checkpoints show no differentiation, by step 5,000 the fractal begins to emerge, by step $10^6$ it is fully formed. Parallel emergence confirms the geometry arises from model dynamics, not supervised regression artefacts.
+
+---
+
+\subsection{Fig 08: Mess3 Supervised vs.\ Unsupervised Controls (CV, Shuffle, MSE Bars)}
+
+\paragraph{Design.}
+
+Both methods trained on 30\% train / 70\% held-out split (stringent for unsupervised, which requires parent + children transitions in train).
+
+\paragraph{Controls.}
+
+\begin{itemize}
+\item \textbf{Cross-validation:} both recover the fractal on held-out data, ruling out memorization.
+\item \textbf{Shuffle:} belief labels (supervised) or softmax (unsupervised) permuted randomly. Both collapse to the mean, confirming real structure.
+\end{itemize}
+
+Supervised converges faster (single-prefix training unit) than unsupervised (transition-based unit), but both show dramatic collapse on shuffle.
+
+---
+
+\subsection{Fig 26: RRXOR Supervised vs.\ Unsupervised (Identical Pipeline, Apples-to-Apples)}
+
+\paragraph{Data: per-(input, position) points vs.\ per-state COMs.}
+
+Unlike Mess3 (enumerated prefixes), RRXOR uses all (sequence, position) pairs from the enumeration (since the 36 MSP states are discrete and sparse). This yields $\approx 1046$ unique prefixes mapping to 36 belief states with multiple prefixes per state. The regression is fit on all points, but per-state geometry is evaluated by taking the mean prediction per state (centre of mass, COM).
+
+\paragraph{Regression and affine placement.}
+
+Both supervised and unsupervised panels use a label-fit readout to place the geometry on the simplex. This affine map is fit on the 36 state COMs, weighted equally (per-state-equal weighting, not occurrence-weighted), then applied to predict the simplex coordinates of all points. The readout is \textit{display only}; the unsupervised content is the subspace $B$ itself.
+
+\paragraph{Subspace recovery.}
+
+The observability-OOM subspace is recovered using the concatenated residual-stream activations (all four layers), with $P(w)$-weighted regressions to build $C$ and $\{G_x\}$. The observability matrix is constructed to depth 3. The $d=5$ subspace is selected a priori (the true RRXOR state dimension), as the singular spectrum does not show a clean elbow for RRXOR (weak observability).
+
+\paragraph{Metrics: per-position and per-state COM.}
+
+\begin{itemize}
+\item \textbf{Per-position $R^2$:} regression score on all $(sequence, position)$ points, weighted equally. Supervised: $0.91$. Unsupervised: $0.65$. The gap is the ``value of the labels'' for weakly observable processes.
+\item \textbf{Per-state COM $R^2$:} regression score on the 36 state COMs. Supervised: $1.00$. Unsupervised: $0.82$ (even at the state level, the unsupervised recovery is diffuse).
+\end{itemize}
+
+
+---
+
+\subsection{Fig 35: RRXOR Diagnostics (Unsupervised, Layerwise and Distance Reversal)}
+
+\paragraph{Layerwise recovery without labels.}
+
+For each activation type, recover a separate observability-OOM subspace (each layer has different dimensionality and observability structure), then regress to belief and compute MSE. This unsupervised analogue of Fig.\ 34-left demonstrates that the ``belief spread across layers'' phenomenon is \textit{not} a supervised artefact: even without labels, each layer's OOM subspace shows poor MSE, and only the concatenation achieves the best recovery.
+
+\paragraph{Distance reversal: next-token dominates.}
+
+The unsupervised representation shows the \textbf{opposite} distance-preservation pattern from supervised:
+\begin{itemize}
+\item Belief distance $R^2 \approx 0.50$ (weak).
+\item Next-token distance $R^2 \approx 0.65$ (strong).
+\end{itemize}
+
+This is \textit{not} a bug or methodological choice; it is the correct consequence of weak observability: the observability-OOM subspace is anchored on the next-token observable $C$ (the first block of $\mathcal{O}$), so its dominant directions encode next-token-shaped geometry. Belief is recoverable as a low-variance linear feature within this next-token-shaped space (via the label-fit affine readout), but is not the leading distance structure.
+
+
+---
+
+\section{Appendix: Operator Rollouts}
+
+\subsection{The Operator Rollout Test}
+
+The subspace recovery answers: ``is belief linearly present?'' A stronger test is the \textbf{operator rollout}: learn the per-token operators $\{A_x\}$ in the subspace (via the rescaling trick), recover the evaluation functional $e$, and regenerate every belief state by rolling out from the root with no access to the per-prefix activations:
+\begin{equation}
+s(wx) = s(w) A_x / (s(w) A_x e), \quad s(\text{root}) = \text{initial state}
+\end{equation}
+
+If the learned operators are a faithful model of the true state dynamics, the rollout will regenerate the geometry (or at least the attractor set). If not, it will diverge or collapse.
+
+\subsection{Fig 29: Supervised Subspace Rollouts (Mess3 and RRXOR)}
+
+\paragraph{Subspace definition.}
+
+Instead of the unsupervised OOM subspace, use the supervised belief-regression coefficients as the subspace:
+\begin{equation}
+B_{\text{sup}} = \text{orth}(\text{Coef}[\text{activations} \to \text{beliefs}])
+\end{equation}
+
+where orthonormalization ensures a stable subspace for operator learning. This is the supervised analogue of the unsupervised $B_{\text{OOM}}$.
+
+\paragraph{Operator learning and rollout.}
+
+Collect transitions, fit operators via the rescaling trick, apply ALS refinement, recover the evaluation functional, and roll out from the root.
+
+\paragraph{Mess3.}
+
+Ground truth $\to$ supervised decode $\to$ supervised-subspace rollout. The rollout reaches $R^2 \approx 1.00$ from the supervised subspace, confirming the learned operators are a perfect model of the true dynamics. This is because Mess3's true operators are diagonalisable strict contractions; the fractal is the attractor set, and the rollout self-corrects.
+
+\paragraph{RRXOR.}
+
+Ground truth $\to$ supervised decode (COM-geom $0.95$) $\to$ supervised-subspace rollout (COM-geom $0.63$). The rollout \textit{collapses}, failing to reach the outer apexes. Crucially, this happens even on the supervised subspace, confirming the collapse is intrinsic to RRXOR's operator algebra, not a failure of unsupervised recovery. RRXOR's true operators are non-diagonalisable (nilpotent/defective); the belief states are transient trajectories of a defective semigroup, not an attractor set. Hence the rollout is not a reliable test of RRXOR's geometry; the raw subspace (Section B) is.
+
+
+---
+
+\subsection{Fig 23: Mess3 Unsupervised Subspace Rollout (OBS-OOM)}
+
+\paragraph{Full unsupervised pipeline.}
+
+Recover the observability-OOM subspace $B_{\text{OOM}}$ from activations + softmax. Learn operators in this subspace via the rescaling trick, apply ALS refinement, recover the evaluation functional, and roll out.
+
+\paragraph{Results.}
+
+Ground truth $\to$ unsupervised OOM subspace (raw activations) $\to$ operator rollout. The rollout achieves $R^2 \approx 1.00$, matching the supervised rollout. The Mess3 fractal emerges perfectly from the learned dynamics, confirming the unsupervised subspace is operator-consistent and operator learning succeeds.
+
+
+---
+
+\subsection{Fig 24: RRXOR Unsupervised Subspace Rollout (OOM)}
+
+\paragraph{Full pipeline.}
+
+Observability-OOM subspace recovery, operator learning, ALS refinement, evaluation functional, and rollout, all target-free.
+
+\paragraph{Results.}
+
+Ground truth $\to$ unsupervised OOM subspace (per-state COM $R^2 = 0.66$) $\to$ operator rollout (COM-geom $0.74$, but visually the apexes remain central). The rollout collapse matches the supervised collapse, once again confirming the issue is the operator algebra, not the unsupervised estimator.
+
+
+---
+
+\section*{Reproducibility}
+
+All figures are generated deterministically from:
+\begin{enumerate}
+\item Pre-trained model checkpoints at various training steps.
+\item Enumerated prefix collections (no sampling or truncation).
+\item Fixed random seeds for cross-validation and shuffle splits.
+\item Standard linear algebra and statistics libraries.
+\end{enumerate}
+
+\end{document}

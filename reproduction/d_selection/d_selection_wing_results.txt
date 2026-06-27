@@ -1,0 +1,17 @@
+D-Selection Results: wing
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 7
+  Elbow Method:         3
+  MI Saturation:        2
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 3
+  Effective Rank (99%): 4
+  Elbow Method:         4
+  MI Saturation:        2
+  Agreement:            False

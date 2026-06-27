@@ -1,0 +1,17 @@
+D-Selection Results: fern
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 7
+  Elbow Method:         3
+  MI Saturation:        2
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 5
+  Effective Rank (99%): 6
+  Elbow Method:         7
+  MI Saturation:        2
+  Agreement:            False

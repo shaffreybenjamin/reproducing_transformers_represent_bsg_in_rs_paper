@@ -1,0 +1,17 @@
+D-Selection Results: rrxor
+======================================================================
+True d: 5
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 6
+  Effective Rank (99%): 9
+  Elbow Method:         5
+  MI Saturation:        3
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 6
+  Effective Rank (99%): 7
+  Elbow Method:         8
+  MI Saturation:        1
+  Agreement:            False

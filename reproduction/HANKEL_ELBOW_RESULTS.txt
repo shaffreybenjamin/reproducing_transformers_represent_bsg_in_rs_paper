@@ -1,0 +1,302 @@
+HANKEL TWO-FACTOR SPECTRAL-OOM: D-SELECTION RESULTS
+======================================================================
+
+Process              | True d | Detected d | Match | Status
+-----------------------------------------------------------------
+arch                 |      4 |          2 | ✗     | OK
+mess3                |      3 |          3 | ✓     | OK
+fern                 |      3 |          1 | ✗     | OK
+strata               |      3 |          1 | ✗     | OK
+wing                 |      3 |          1 | ✗     | OK
+zero_one_random      |      3 |         92 | ✗     | OK
+rrxor                |      5 |          1 | ✗     | OK
+-----------------------------------------------------------------
+Correct: 1/7 (14.3%)
+
+======================================================================
+
+DETAILED RESULTS
+======================================================================
+
+ARCH
+----------------------------------------------------------------------
+True d: 4
+Detected d: 2
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== Arch (TRUE_D=4) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 88572 prefixes
+  Reachable prefixes (TRUE process): 88572/88572
+Fitting transition operators...
+  Fitted 3 operators from 29523 rows
+Building controllability factor R...
+  R shape: (88572, 256)
+Building observability factor S...
+  S shape: (256, 88572)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 256), singular values: (256,)
+
+Singular value spectrum (top 20):
+  [1.932e-01 2.830e-02 8.000e-04 3.000e-04 2.000e-04 1.000e-04 1.000e-04
+ 1.000e-04 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00
+ 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00]
+
+Normalized spectrum (sv / sv[0]):
+  [1.000e+00 1.463e-01 4.000e-03 1.600e-03 1.100e-03 5.000e-04 4.000e-04
+ 3.000e-04 2.000e-04 1.000e-04 1.000e-04 1.000e-04 0.000e+00 0.000e+00
+ 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00]
+
+Elbow-detected d: 2
+
+>>> Elbow-detected d: 2   True d: 4   Match: False
+Belief-decode R^2 (supervised, full activations): 0.9740
+Belief-decode R^2 (unsupervised, d=2): 0.4621
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_arch_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_arch_hankel_spectrum.png
+
+
+MESS3
+----------------------------------------------------------------------
+True d: 3
+Detected d: 3
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== Mess3 (TRUE_D=3) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 88572 prefixes
+  Reachable prefixes (TRUE process): 88572/88572
+Fitting transition operators...
+  Fitted 3 operators from 29523 rows
+Building controllability factor R...
+  R shape: (88572, 256)
+Building observability factor S...
+  S shape: (256, 88572)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 256), singular values: (256,)
+
+Singular value spectrum (top 20):
+  [1.884e-01 1.164e-01 1.146e-01 1.300e-03 8.000e-04 5.000e-04 3.000e-04
+ 2.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04 0.000e+00
+ 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00]
+
+Normalized spectrum (sv / sv[0]):
+  [1.000e+00 6.180e-01 6.083e-01 6.800e-03 4.100e-03 2.800e-03 1.700e-03
+ 9.000e-04 7.000e-04 6.000e-04 5.000e-04 3.000e-04 3.000e-04 2.000e-04
+ 2.000e-04 2.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04]
+
+Elbow-detected d: 3
+
+>>> Elbow-detected d: 3   True d: 3   Match: True
+Belief-decode R^2 (supervised, full activations): 0.9986
+Belief-decode R^2 (unsupervised, d=3): 0.9897
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_mess3_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_mess3_hankel_spectrum.png
+
+
+FERN
+----------------------------------------------------------------------
+True d: 3
+Detected d: 1
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== Fern (TRUE_D=3) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 2046 prefixes
+  Reachable prefixes (TRUE process): 2046/2046
+Fitting transition operators...
+  Fitted 2 operators from 1022 rows
+Building controllability factor R...
+  R shape: (2046, 256)
+Building observability factor S...
+  S shape: (256, 2046)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 256), singular values: (256,)
+
+Singular value spectrum (top 20):
+  [4.471e-01 9.500e-03 3.800e-03 2.500e-03 1.200e-03 7.000e-04 6.000e-04
+ 3.000e-04 2.000e-04 2.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04
+ 1.000e-04 1.000e-04 1.000e-04 0.000e+00 0.000e+00 0.000e+00]
+
+Normalized spectrum (sv / sv[0]):
+  [1.00e+00 2.11e-02 8.60e-03 5.60e-03 2.70e-03 1.60e-03 1.40e-03 7.00e-04
+ 6.00e-04 4.00e-04 3.00e-04 3.00e-04 2.00e-04 2.00e-04 2.00e-04 1.00e-04
+ 1.00e-04 1.00e-04 1.00e-04 1.00e-04]
+
+Elbow-detected d: 1
+
+>>> Elbow-detected d: 1   True d: 3   Match: False
+Belief-decode R^2 (supervised, full activations): 0.9640
+Belief-decode R^2 (unsupervised, d=1): 0.2712
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_fern_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_fern_hankel_spectrum.png
+
+
+STRATA
+----------------------------------------------------------------------
+True d: 3
+Detected d: 1
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== Strata (TRUE_D=3) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 2046 prefixes
+  Reachable prefixes (TRUE process): 2046/2046
+Fitting transition operators...
+  Fitted 2 operators from 1022 rows
+Building controllability factor R...
+  R shape: (2046, 256)
+Building observability factor S...
+  S shape: (256, 2046)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 256), singular values: (256,)
+
+Singular value spectrum (top 20):
+  [9.643e-01 7.500e-02 1.070e-02 3.500e-03 1.900e-03 1.000e-03 7.000e-04
+ 6.000e-04 6.000e-04 5.000e-04 3.000e-04 2.000e-04 2.000e-04 2.000e-04
+ 1.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04]
+
+Normalized spectrum (sv / sv[0]):
+  [1.00e+00 7.78e-02 1.11e-02 3.60e-03 2.00e-03 1.10e-03 7.00e-04 7.00e-04
+ 6.00e-04 5.00e-04 3.00e-04 3.00e-04 2.00e-04 2.00e-04 1.00e-04 1.00e-04
+ 1.00e-04 1.00e-04 1.00e-04 1.00e-04]
+
+Elbow-detected d: 1
+
+>>> Elbow-detected d: 1   True d: 3   Match: False
+Belief-decode R^2 (supervised, full activations): 0.9999
+Belief-decode R^2 (unsupervised, d=1): 0.9744
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_strata_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_strata_hankel_spectrum.png
+
+
+WING
+----------------------------------------------------------------------
+True d: 3
+Detected d: 1
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== Wing (TRUE_D=3) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 2046 prefixes
+  Reachable prefixes (TRUE process): 2046/2046
+Fitting transition operators...
+  Fitted 2 operators from 1022 rows
+Building controllability factor R...
+  R shape: (2046, 256)
+Building observability factor S...
+  S shape: (256, 2046)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 256), singular values: (256,)
+
+Singular value spectrum (top 20):
+  [7.001e-01 1.960e-02 8.400e-03 1.800e-03 1.100e-03 7.000e-04 6.000e-04
+ 3.000e-04 3.000e-04 2.000e-04 1.000e-04 1.000e-04 1.000e-04 1.000e-04
+ 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00 0.000e+00]
+
+Normalized spectrum (sv / sv[0]):
+  [1.0e+00 2.8e-02 1.2e-02 2.6e-03 1.6e-03 1.0e-03 9.0e-04 5.0e-04 4.0e-04
+ 3.0e-04 2.0e-04 2.0e-04 1.0e-04 1.0e-04 1.0e-04 1.0e-04 1.0e-04 0.0e+00
+ 0.0e+00 0.0e+00]
+
+Elbow-detected d: 1
+
+>>> Elbow-detected d: 1   True d: 3   Match: False
+Belief-decode R^2 (supervised, full activations): 0.9604
+Belief-decode R^2 (unsupervised, d=1): 0.6783
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_wing_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_wing_hankel_spectrum.png
+
+
+ZERO_ONE_RANDOM
+----------------------------------------------------------------------
+True d: 3
+Detected d: 92
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== Zero-one-random (TRUE_D=3) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 2046 prefixes
+  Reachable prefixes (TRUE process): 134/2046
+Fitting transition operators...
+  Fitted 2 operators from 1022 rows
+Building controllability factor R...
+  R shape: (134, 256)
+Building observability factor S...
+  S shape: (256, 2046)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 134), singular values: (134,)
+
+Singular value spectrum (top 20):
+  [1.3665 0.9902 0.6054 0.3831 0.279  0.1711 0.1565 0.1154 0.1108 0.0941
+ 0.0737 0.0652 0.058  0.052  0.0435 0.0411 0.0348 0.0281 0.0245 0.0223]
+
+Normalized spectrum (sv / sv[0]):
+  [1.     0.7246 0.443  0.2804 0.2042 0.1252 0.1145 0.0844 0.0811 0.0688
+ 0.0539 0.0477 0.0424 0.0381 0.0318 0.0301 0.0255 0.0205 0.0179 0.0163]
+
+Elbow-detected d: 92
+
+>>> Elbow-detected d: 92   True d: 3   Match: False
+Belief-decode R^2 (supervised, full activations): 1.0000
+Belief-decode R^2 (unsupervised, d=92): 0.9973
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_zero_one_random_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_zero_one_random_hankel_spectrum.png
+
+
+RRXOR
+----------------------------------------------------------------------
+True d: 5
+Detected d: 1
+Status: SUCCESS
+
+Output:
+Moving model to device:  cpu
+=== RRXOR (TRUE_D=5) ===
+loaded model (ctx=10, device=cpu)
+Collecting prefix features...
+  Enumerated 2046 prefixes
+  Reachable prefixes (TRUE process): 1046/2046
+Fitting transition operators...
+  Fitted 2 operators from 1022 rows
+Building controllability factor R...
+  R shape: (1046, 256)
+Building observability factor S...
+  S shape: (256, 2046)
+Computing P·S via low-rank factorization (no memory blow-up)...
+  Basis shape: (256, 256), singular values: (256,)
+
+Singular value spectrum (top 20):
+  [0.5249 0.2848 0.1566 0.1053 0.0885 0.0658 0.0461 0.0369 0.023  0.0204
+ 0.0162 0.0141 0.0116 0.0112 0.0098 0.0073 0.006  0.0056 0.0049 0.0043]
+
+Normalized spectrum (sv / sv[0]):
+  [1.     0.5426 0.2982 0.2005 0.1687 0.1254 0.0878 0.0702 0.0438 0.0388
+ 0.0308 0.0269 0.022  0.0213 0.0187 0.0138 0.0113 0.0106 0.0094 0.0083]
+
+Elbow-detected d: 1
+
+>>> Elbow-detected d: 1   True d: 5   Match: False
+Belief-decode R^2 (supervised, full activations): 0.8356
+Belief-decode R^2 (unsupervised, d=1): 0.0876
+Saved geometry figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_rrxor_hankel_geometry.png
+Saved spectrum figure -> /home/ben/mathematics_thesis_project/reproducing_transformers_represent_bsg_in_rs_paper/reproduction/figures/fig1_rrxor_hankel_spectrum.png
+

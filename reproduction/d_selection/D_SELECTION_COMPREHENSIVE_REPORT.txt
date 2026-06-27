@@ -1,0 +1,173 @@
+D-SELECTION COMPREHENSIVE REPORT
+======================================================================
+Analysis of effective rank + MI saturation methods
+Tested on 7 known processes
+
+
+----------------------------------------------------------------------
+ZERO_ONE_RANDOM (true d=3)
+----------------------------------------------------------------------
+D-Selection Results: zero_one_random
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 10
+  Effective Rank (99%): 13
+  Elbow Method:         5
+  MI Saturation:        5
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 5
+  Effective Rank (99%): 7
+  Elbow Method:         6
+  MI Saturation:        1
+  Agreement:            False
+
+
+----------------------------------------------------------------------
+FERN (true d=3)
+----------------------------------------------------------------------
+D-Selection Results: fern
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 7
+  Elbow Method:         3
+  MI Saturation:        2
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 5
+  Effective Rank (99%): 6
+  Elbow Method:         7
+  MI Saturation:        2
+  Agreement:            False
+
+
+----------------------------------------------------------------------
+STRATA (true d=3)
+----------------------------------------------------------------------
+D-Selection Results: strata
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 6
+  Elbow Method:         5
+  MI Saturation:        2
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 3
+  Effective Rank (99%): 3
+  Elbow Method:         4
+  MI Saturation:        1
+  Agreement:            False
+
+
+----------------------------------------------------------------------
+WING (true d=3)
+----------------------------------------------------------------------
+D-Selection Results: wing
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 7
+  Elbow Method:         3
+  MI Saturation:        2
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 3
+  Effective Rank (99%): 4
+  Elbow Method:         4
+  MI Saturation:        2
+  Agreement:            False
+
+
+----------------------------------------------------------------------
+ARCH (true d=4)
+----------------------------------------------------------------------
+D-Selection Results: arch
+======================================================================
+True d: 4
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 4
+  Effective Rank (99%): 8
+  Elbow Method:         5
+  MI Saturation:        1
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 6
+  Effective Rank (99%): 8
+  Elbow Method:         9
+  MI Saturation:        1
+  Agreement:            False
+
+
+----------------------------------------------------------------------
+MESS3 (true d=3)
+----------------------------------------------------------------------
+D-Selection Results: mess3
+======================================================================
+True d: 3
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 5
+  Effective Rank (99%): 11
+  Elbow Method:         5
+  MI Saturation:        2
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 5
+  Effective Rank (99%): 6
+  Elbow Method:         9
+  MI Saturation:        2
+  Agreement:            False
+
+
+----------------------------------------------------------------------
+RRXOR (true d=5)
+----------------------------------------------------------------------
+D-Selection Results: rrxor
+======================================================================
+True d: 5
+
+SPECTRAL-OOM:
+  Effective Rank (95%): 6
+  Effective Rank (99%): 9
+  Elbow Method:         5
+  MI Saturation:        3
+  Agreement:            False
+
+CCA/RRR:
+  Effective Rank (95%): 6
+  Effective Rank (99%): 7
+  Elbow Method:         8
+  MI Saturation:        1
+  Agreement:            False
+
+
+
+======================================================================
+SUMMARY TABLE
+======================================================================
+Process              True d     ER95 (OOM)   ER99 (OOM)   MI (OOM)     ER95 (CCA)   ER99 (CCA)   MI (CCA)    
+----------------------------------------------------------------------------------------------------
+zero_one_random      3          10           13           ?            5            7            ?           
+fern                 3          4            7            ?            5            6            ?           
+strata               3          4            6            ?            3            3            ?           
+wing                 3          4            7            ?            3            4            ?           
+arch                 4          4            8            ?            6            8            ?           
+mess3                3          5            11           ?            5            6            ?           
+rrxor                5          6            9            ?            6            7            ?           
