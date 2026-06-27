@@ -47,7 +47,8 @@ def main():
             pre = pre + (t,)
         reach[w] = ok
     pw = F14.analytic_prefix_probs(resid, T, pi)             # P(w) sample weights
-    _, _, _, _, Uobs, _ = F14.observable_subspace(resid, soft, reach, 2, wmap=pw)
+    _, _, _, _, Uobs, _ = F14.observable_subspace(resid, soft, reach, 2, depth=5, wmap=pw,
+                                                   use_multistep_als=True, als_max_order=1, als_n_iter=20)
     B = Uobs[:, :D]                                           # (384, 5) unsupervised subspace
 
     # ---- fig10's exact data: every (input, position) of the length-10 enumeration ----
@@ -113,7 +114,7 @@ def main():
     draw(ax[0], tgt, "Ground truth belief geometry", scatter=False)
     draw(ax[1], xy_sup, f"Supervised: full residual stream (384-D)\ndecode R$^2$={r2_sup:.2f} (per-state-equal wt)")
     draw(ax[2], xy_uns, f"Unsupervised: recovered spectral-OOM subspace (5-D)\ndecode R$^2$={r2_uns:.2f} (per-state-equal wt)")
-    out = FIG_DIR / "fig26_rrxor_principled.png"
+    out = FIG_DIR / "fig26_rrxor_principled_multistep_als.png"
     fig.tight_layout(); fig.savefig(out, dpi=200, bbox_inches="tight", facecolor="white")
     print(f"saved -> {out}")
 

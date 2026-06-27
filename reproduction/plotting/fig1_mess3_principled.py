@@ -7,12 +7,14 @@ label-fit placement (display only). Demonstrates the unsupervised subspace repro
 supervised Mess3 fractal.
 """
 from pathlib import Path
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
+sys.path.insert(0, str(Path(__file__).parent.parent / "estimators"))
 import unsupervised_belief_oom as U
 import fig14_observable_oom as F14
 import fig8_10_unified_best as F23
@@ -30,7 +32,8 @@ def main():
     reach = {w: True for w in resid}
 
     # unsupervised observability-OOM subspace (single layer), P(w)-weighted
-    _, _, _, _, Uobs, _ = F14.observable_subspace(resid, soft, reach, vocab, wmap=prefix_prob)
+    _, _, _, _, Uobs, _ = F14.observable_subspace(resid, soft, reach, vocab, depth=5, wmap=prefix_prob,
+                                                   use_multistep_als=True, als_max_order=1, als_n_iter=20)
     B = Uobs[:, :D]
 
     seqs = [s for s in resid if s in belief]
@@ -62,7 +65,7 @@ def main():
     ax[2].set_title(f"Unsupervised: spectral-OOM subspace ({D}-D)\nbelief-decode R$^2$={r2_uns:.3f}")
     for a in ax:
         a.axis("off")
-    out = FIG_DIR / "fig28_mess3_principled.png"
+    out = FIG_DIR / "fig28_mess3_principled_multistep_als.png"
     fig.savefig(out, dpi=170, bbox_inches="tight", facecolor="white")
     print(f"saved -> {out}")
 

@@ -102,7 +102,7 @@ VAL_FRAC = 0.3          # held-out fraction for dynamics-consistent order select
 KNEE_TOL = 0.01         # accept smallest d within this of the best held-out R^2
 SEED = 0
 
-OUT_DIR = Path(__file__).parent
+OUT_DIR = Path(__file__).parent.parent  # go up to reproduction/ from estimators/
 MODEL_DIR = OUT_DIR / "models"
 FIG_DIR = OUT_DIR / "figures"
 
