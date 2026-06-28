@@ -299,11 +299,13 @@ def test_belief_recovery_with_true_operators(name, T, pi, model_ckpt, device="cp
 
     # Build observability matrix using TRUE operators
     print(f"\nBuilding observability matrix with true T^x operators...")
-    C = Ridge(alpha=RIDGE, fit_intercept=False).fit(A_centered, B_centered).coef_.T  # (D, NS)
+    # Observable anchor: A -> P (like observable_subspace does)
+    P = np.stack([soft[w] for w in rows])
+    C = Ridge(alpha=RIDGE, fit_intercept=False).fit(A, P).coef_.T  # (D, V)
 
     cols = [C]
     frontier = [C]
-    for depth_iter in range(4):  # depth 5 total
+    for depth_iter in range(10):  # depth 11 total, to ensure saturation
         nxt = []
         for x in range(vocab):
             A_x = psi.T @ T[x] @ psi  # (256, 256)
@@ -316,10 +318,10 @@ def test_belief_recovery_with_true_operators(name, T, pi, model_ckpt, device="cp
     U, sv, _ = np.linalg.svd(O, full_matrices=False)
 
     correct_d = T.shape[1]
-    print(f"Singular values (first 10): {np.round(sv[:10] / sv[0], 3)}")
+    print(f"Singular values (first 20): {np.round(sv[:20] / sv[0], 3)}")
 
     # Find elbow
-    drops = -np.diff(sv[:10] / sv[0])
+    drops = -np.diff(sv[:20] / sv[0])
     elbow_d = np.argmax(drops) + 1
     print(f"Largest drop: {drops.max():.3f} at d={elbow_d}, expected d={correct_d}")
 
