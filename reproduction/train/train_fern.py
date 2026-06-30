@@ -1,58 +1,50 @@
-"""Train a transformer on fern — EXACT continuous-stream pipeline (paper / epsilon-transformers).
+"""Train a transformer on fern with the QUANTUM-PAPER training setup.
 
-Matches epsilon-transformers' ProcessDataset (IterableDataset) + DataLoader:
-  * the process emits ONE continuous stream of tokens,
-  * chopped into consecutive, non-overlapping length-(n_ctx+1)=11 windows,
-    each window -> (input = w[:-1], target = w[1:]),
-  * batched 64 CONSECUTIVE windows per gradient step (no shuffle).
-So the hidden state is continuous across windows (each window's start state is the
-continuation of the previous one), exactly as in their pipeline.
+Same configuration as train_mess3.py (Riechers, Elliott & Shai, epsilon-transformers
+`quantum-public`): Adam (beta1 0.9, beta2 0.999, eps 1e-8) lr 1e-4, no weight decay,
+batch 128, 200 batches/epoch x 20,000 epochs (= 4,000,000 steps), ReduceLROnPlateau
+(factor 0.5, patience 1000, cooldown 200, thr 1e-6) stepped once per epoch on a freshly
+sampled validation batch, checkpoint every 100 epochs. Their transformer: n_ctx 8,
+d_model 64, 4 heads of dim 16, 4 layers, d_mlp 256, ReLU, LayerNorm, seed 42.
 
-Hyperparameters are the paper's App. A.6: context 10, d_model 64, head dim 8,
-1 head, 4 layers, MLP 256, ReLU, LayerNorm; SGD, batch 64, lr 0.01, no weight
-decay, 1,000,000 steps. Fern x=0.5 (vocab 2, states 3).
+Data is the exact-distribution sampler (exact_sampler.py): each batch is i.i.d. draws
+from the enumerated length-(n_ctx+1) window distribution; the optimal-loss line is the
+exact myopic-entropy bound for this context length.
 
-The stream is generated in memory BLOCKS via jax.lax.scan, carrying the hidden
-state AND the rng key across blocks -- so it is a single unbroken stream (identical
-data to generating it all at once) but produced in chunks so the tiny model's GPU
-isn't stalled by per-step generation (the RunPod cost lever).
+fern: x=0.5 (vocab 2).
 """
 
 import sys
-from functools import partial
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
-from simplexity.generative_processes.builder import build_hidden_markov_model
+from exact_sampler import build_process_data
 
+PROCESS = "fern"
 FERN_PARAMS = {"x": 0.5}
-CONTEXT_LEN = 10
-NUM_STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else 1_000_000  # paper value = 1e6
-BATCH_SIZE = 64
-LEARNING_RATE = 0.01           # SGD
+CONTEXT_LEN = 8
+BATCH_SIZE = 128
+BATCHES_PER_EPOCH = 200
+N_EPOCHS = int(sys.argv[1]) if len(sys.argv) > 1 else 20_000  # paper value = 20,000
+LEARNING_RATE = 1e-4
 SEED = 42
-LOG_EVERY = 500
-CKPT_EVERY = 5_000
-BLOCK_STEPS = 2_000            # generate this many steps' worth of the stream per jax.lax.scan
-N_TOKENS = BLOCK_STEPS * BATCH_SIZE * (CONTEXT_LEN + 1)   # tokens per generated block
-OPTIMAL_LOSS = 0.6730          # optimal windowed CE (myopic entropy avg over ctx 1..10, belief reset per window); old 0.6739 was the unigram/no-context entropy (asymptotic entropy rate = 0.6728)
+LOG_EVERY_EPOCHS = 25
+CKPT_EVERY_EPOCHS = 100
 
 OUT_DIR = Path(__file__).parent
-MODEL_DIR = OUT_DIR / "models"
-FIG_DIR = OUT_DIR / "figures"
+MODEL_DIR = OUT_DIR.parent / "models"    # reproduction/models -- where the analysis scripts read
+FIG_DIR = OUT_DIR.parent / "figures"
 CKPT = MODEL_DIR / "fern_transformer.pt"
 
 
 def build_model(vocab_size: int, device: str) -> HookedTransformer:
     cfg = HookedTransformerConfig(
-        d_model=64, d_head=8, n_heads=1, n_layers=4, d_mlp=256, n_ctx=CONTEXT_LEN,
+        d_model=64, d_head=16, n_heads=4, n_layers=4, d_mlp=256, n_ctx=CONTEXT_LEN,
         d_vocab=vocab_size, act_fn="relu", normalization_type="LN", seed=SEED, device=device,
     )
     return HookedTransformer(cfg)
@@ -71,74 +63,71 @@ def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     torch.manual_seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"device: {device}  steps: {NUM_STEPS}  block_steps: {BLOCK_STEPS}  optimal loss: {OPTIMAL_LOSS:.4f}")
 
-    hmm = build_hidden_markov_model("fern", FERN_PARAMS)
-    _T = jnp.asarray(hmm.transition_matrices)
-    _NSTATES = _T.shape[1]
-    STATIONARY = jnp.asarray(hmm.initial_state)
+    data = build_process_data(PROCESS, FERN_PARAMS, CONTEXT_LEN, device)
+    total_steps = N_EPOCHS * BATCHES_PER_EPOCH
+    print(f"device: {device}  epochs: {N_EPOCHS}  steps: {total_steps}  "
+          f"windows: {data.sequences.shape[0]}  optimal loss: {data.optimal_loss:.4f}")
 
-    vocab_size = int(_T.shape[0])
-    model = build_model(vocab_size, device)
-    print(f"model params: {sum(p.numel() for p in model.parameters())}  vocab: {vocab_size}")
-    optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, weight_decay=0.0)
+    model = build_model(data.vocab_size, device)
+    print(f"model params: {sum(p.numel() for p in model.parameters())}  vocab: {data.vocab_size}")
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=LEARNING_RATE, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=1000, cooldown=200, threshold=1e-6
+    )
 
-    def _emit(carry, _):
-        s, key = carry
-        key, sub = jax.random.split(key)
-        logp = jnp.log(_T[:, s, :].reshape(-1))
-        idx = jax.random.categorical(sub, logp)
-        token = idx // _NSTATES
-        nxt = idx % _NSTATES
-        return (nxt, key), token
+    train_gen = torch.Generator(device=device).manual_seed(SEED)
+    x_val, y_val, val_probs = data.validation_data()  # full enumerated table (their validate_epoch_all)
 
-    @partial(jax.jit, static_argnums=2)
-    def gen_stream_block(s0, key0, n):
-        (s_final, key_final), tokens = jax.lax.scan(_emit, (s0, key0), None, length=n)
-        return s_final, key_final, tokens.astype(jnp.int32)
+    epoch_losses: list[float] = []  # per-epoch mean train loss (light; for the loss curve)
+    step = 0
+    for epoch in range(N_EPOCHS):
+        model.train()
+        run = torch.zeros((), device=device)
+        for _ in range(BATCHES_PER_EPOCH):
+            x, y = data.sample_batch(BATCH_SIZE, generator=train_gen)
+            logits = model(x)
+            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            run += loss.detach()   # accumulate on-GPU; avoids a CPU<->GPU sync every step
+            step += 1
+        mean_train = (run / BATCHES_PER_EPOCH).item()   # one sync per epoch, not per step
+        epoch_losses.append(mean_train)
 
-    key = jax.random.PRNGKey(SEED)
-    key, sk = jax.random.split(key)
-    state = jax.random.categorical(sk, jnp.log(STATIONARY))   # initial hidden state ~ stationary
+        # Validation over the FULL enumerated distribution (their validate_epoch_all): probability-
+        # weighted cross-entropy over every window. Step the LR scheduler on it, exactly as they do.
+        model.eval()
+        with torch.no_grad():
+            ce = F.cross_entropy(
+                model(x_val).reshape(-1, data.vocab_size), y_val.reshape(-1), reduction="none"
+            ).reshape(x_val.shape[0], -1)
+            weighted = ce * val_probs.unsqueeze(1)
+            scheduler.step(weighted.mean())               # scheduler signal (their loss.mean())
+            val_loss = weighted.sum(dim=0).mean().item()  # expected CE per position (for logging)
 
-    losses: list[float] = []
-    inp_all = lab_all = None
-    model.train()
-    for step in range(NUM_STEPS):
-        b = step % BLOCK_STEPS
-        if b == 0:  # continue the single stream for one block, chop into consecutive windows
-            state, key, toks = gen_stream_block(state, key, N_TOKENS)
-            windows = np.asarray(toks).reshape(BLOCK_STEPS * BATCH_SIZE, CONTEXT_LEN + 1)
-            w = torch.from_numpy(windows).long().to(device)
-            inp_all, lab_all = w[:, :-1], w[:, 1:]
-        x = inp_all[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
-        y = lab_all[b * BATCH_SIZE:(b + 1) * BATCH_SIZE]
+        if epoch % LOG_EVERY_EPOCHS == 0 or epoch == N_EPOCHS - 1:
+            lr = optimizer.param_groups[0]["lr"]
+            print(f"epoch {epoch:6d}  step {step:8d}  train {mean_train:.4f}  val {val_loss:.4f}  "
+                  f"lr {lr:.2e}  (opt {data.optimal_loss:.4f})", flush=True)
+        if epoch > 0 and epoch % CKPT_EVERY_EPOCHS == 0:
+            save_ckpt(model, epoch_losses, step)
 
-        logits = model(x)
-        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y.reshape(-1))
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-
-        losses.append(loss.item())
-        if step % LOG_EVERY == 0 or step == NUM_STEPS - 1:
-            recent = np.mean(losses[-LOG_EVERY:])
-            print(f"step {step:7d}  loss {loss.item():.4f}  recent_mean {recent:.4f}  (opt {OPTIMAL_LOSS:.4f})", flush=True)
-        if step > 0 and step % CKPT_EVERY == 0:
-            save_ckpt(model, losses, step)
-
-    save_ckpt(model, losses, NUM_STEPS)
+    save_ckpt(model, epoch_losses, total_steps)
     print(f"saved model -> {CKPT}")
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(losses, alpha=0.3, lw=0.5)
-    w = 500
-    if len(losses) > w:
-        smooth = np.convolve(losses, np.ones(w) / w, mode="valid")
-        ax.plot(range(w - 1, len(losses)), smooth, "r-", lw=1.5, label="smoothed")
-    ax.axhline(OPTIMAL_LOSS, color="k", ls="--", lw=1, label=f"optimal {OPTIMAL_LOSS:.4f}")
-    ax.set_xlabel("step"); ax.set_ylabel("cross-entropy loss")
-    ax.set_title(f"fern (paper config, continuous stream) training (final {losses[-1]:.4f})")
+    ax.plot(epoch_losses, alpha=0.4, lw=0.7, label="train (epoch mean)")
+    w = 50
+    if len(epoch_losses) > w:
+        smooth = np.convolve(epoch_losses, np.ones(w) / w, mode="valid")
+        ax.plot(range(w - 1, len(epoch_losses)), smooth, "r-", lw=1.5, label="smoothed")
+    ax.axhline(data.optimal_loss, color="k", ls="--", lw=1, label=f"optimal {data.optimal_loss:.4f}")
+    ax.set_xlabel("epoch"); ax.set_ylabel("cross-entropy loss")
+    ax.set_title(f"fern (quantum-paper config) training (final {epoch_losses[-1]:.4f})")
     ax.legend()
     fig.savefig(FIG_DIR / "fig_fern_training_loss.png", dpi=150, bbox_inches="tight")
 

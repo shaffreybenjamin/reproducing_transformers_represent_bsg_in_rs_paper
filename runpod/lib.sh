@@ -55,16 +55,16 @@ create_pod() { # sets POD_ID
   local name="${RUNPOD_POD_NAME}-$(date +%H%M%S)"
   local body
   body="$(python3 - "$name" "$RUNPOD_IMAGE" "$RUNPOD_GPU_TYPE" "$RUNPOD_CONTAINER_DISK_GB" \
-                  "$RUNPOD_VOLUME_ID" "$pubkey" "${RUNPOD_ALLOWED_CUDA:-}" <<'PY'
+                  "$RUNPOD_VOLUME_ID" "$pubkey" "${RUNPOD_ALLOWED_CUDA:-}" "${RUNPOD_GPU_COUNT:-1}" <<'PY'
 import json, sys
-name, image, gpu, disk, vol, pubkey, cuda = sys.argv[1:8]
+name, image, gpu, disk, vol, pubkey, cuda, gpu_count = sys.argv[1:9]
 gpu_ids = [s.strip() for s in gpu.split(",") if s.strip()]   # ordered fallback list
 body = {
     "name": name,
     "imageName": image,
     "cloudType": "SECURE",
     "computeType": "GPU",
-    "gpuCount": 1,
+    "gpuCount": int(gpu_count),
     "gpuTypeIds": gpu_ids,
     "gpuTypePriority": "availability",
     "containerDiskInGb": int(disk),
@@ -83,7 +83,7 @@ PY
   local resp; resp="$(api POST /pods "$body")"
   POD_ID="$(json_get 'd.get("id","")' <<<"$resp" 2>/dev/null || true)"
   if [[ -z "$POD_ID" ]]; then echo "ERROR creating pod: $resp" >&2; exit 1; fi
-  echo ">> pod created: $POD_ID  (gpu: $RUNPOD_GPU_TYPE)"
+  echo ">> pod created: $POD_ID  (${RUNPOD_GPU_COUNT:-1}x gpu: $RUNPOD_GPU_TYPE)"
 }
 
 terminate_pod() {

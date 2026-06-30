@@ -41,6 +41,10 @@ uv pip install --python /workspace/.venv -e ".[cuda]"
 # PyPI's default torch 2.9 wheel targets CUDA 13.0 (needs a rare 13.0-driver host). Pin the
 # cu128 build so torch runs on the common CUDA 12.8 hosts (see RUNPOD_ALLOWED_CUDA).
 uv pip install --python /workspace/.venv "torch==2.9.1" --index-url https://download.pytorch.org/whl/cu128
+# torchaudio is unused here, and a stale cu13 build of it on the volume breaks the import chain
+# transformer_lens -> transformers -> loss/loss_rnnt -> "import torchaudio" -> libcudart.so.13.
+# The import is guarded by is_torchaudio_available(), so simply removing torchaudio fixes it.
+uv pip uninstall --python /workspace/.venv torchaudio 2>/dev/null || true
 echo "---- sanity ----"
 /workspace/.venv/bin/python - <<'PY'
 import torch, transformer_lens, jax, simplexity
@@ -53,5 +57,5 @@ PY
 EOF
 
 echo ">> setup complete. The venv lives on volume $RUNPOD_VOLUME_ID and survives termination."
-echo ">> run a training job with:  ./runpod/train.sh 1000000"
+echo ">> run a training job with:  ./runpod/train.sh 20000 train/train_mess3.py"
 # pod terminated by the EXIT trap

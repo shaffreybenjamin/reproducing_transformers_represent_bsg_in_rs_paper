@@ -5,15 +5,20 @@ reuses dependencies from a **persistent network volume**, pulls results back to 
 laptop, commits them to git, and **terminates the pod** so billing stops.
 
 ```
-./runpod/train.sh 1000000      # train 1e6 steps on a GPU, then auto-terminate
+./runpod/train.sh 20000 train/train_mess3.py   # train 20,000 epochs on a GPU, then auto-terminate
 ```
+
+> **Arg is EPOCHS, not steps.** The training scripts take an epoch count (200 batches
+> per epoch); the quantum-paper full run is **20,000 epochs (= 4,000,000 steps)**. Do
+> not pass `1000000` — that would request a million epochs. The script path is now under
+> `train/` (e.g. `train/train_mess3.py`) after the directory reorganisation.
 
 ## How it works
 
 ```
 laptop  ──create pod (volume attached)──►  RunPod GPU pod (ephemeral)
         ──rsync reproduction/ up──────►     /workspace/repo
-        ◄─tail log over SSH────────────     tmux: .venv/bin/python train_mess3.py
+        ◄─tail log over SSH────────────     tmux: .venv/bin/python train/train_mess3.py
         ◄─rsync models+figures down───      /workspace/repo/reproduction/{models,figures}
         ──DELETE /pods/{id}────────────►     (terminated)
    git commit + push results
@@ -53,11 +58,23 @@ live on it, so `train.sh` never reinstalls — it just runs.
 ## Daily use
 
 ```
-./runpod/train.sh            # 1,000,000 steps (paper default)
-./runpod/train.sh 50000      # a quick smoke run
+./runpod/train.sh                              # 20,000 epochs, train/train_mess3.py (default)
+./runpod/train.sh 100 train/train_mess3.py     # a quick smoke run (100 epochs)
 ```
 
-When it finishes, `reproduction/models/mess3_transformer.pt` and
+**Train all 7 processes at once** on a single GPU (they're tiny, so they share it — one
+pod, one volume, all checkpoints pulled back together):
+
+```
+./runpod/train.sh 20000 all
+```
+
+You can also pass a chosen subset to run concurrently, e.g.
+`./runpod/train.sh 20000 train/train_wing.py train/train_fern.py`. Each script runs as
+its own process with its own log (`reproduction/<name>.log`); the run waits for all of
+them before pulling results and terminating the pod.
+
+When it finishes, `reproduction/models/*.pt` and
 `reproduction/figures/*.png` are updated locally and (if `AUTO_PUSH=true`) committed
 and pushed. Then regenerate any analysis figures locally, e.g.:
 
