@@ -20,7 +20,7 @@ from simplexity.generative_processes.transition_matrices import rrxor
 import fig14_observable_oom as F14
 import fig13_rrxor_unsupervised_oom as F13
 import fig09_rrxor_ground_truth as B9
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 
 FIG_DIR = Path(__file__).parent / "figures"
 D = 5

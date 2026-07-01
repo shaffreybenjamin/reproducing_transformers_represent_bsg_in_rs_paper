@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.linear_model import Ridge
 from pathlib import Path
 
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 import stage1_cca_general as S1
 import d_selection as D_sel
 import fig14_observable_oom as FIG14

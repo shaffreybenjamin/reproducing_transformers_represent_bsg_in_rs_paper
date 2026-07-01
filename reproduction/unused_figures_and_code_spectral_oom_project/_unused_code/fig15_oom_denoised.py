@@ -46,7 +46,7 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression, Ridge
 
 from simplexity.generative_processes.transition_matrices import mess3, rrxor
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 import fig14_observable_oom as F14
 import fig13_rrxor_unsupervised_oom as F13
 import fig09_rrxor_ground_truth as B9

@@ -49,8 +49,115 @@ MODEL_DIR = OUT_DIR / "models"
 FIG_DIR = OUT_DIR / "figures"
 
 
+def _sample_process(T, pi, N, L, seed=0):
+    """Sample N length-L token sequences from the true OOM (T substochastic operators, pi start)."""
+    rng = np.random.default_rng(seed); V, ns = T.shape[0], T.shape[1]
+    st = rng.choice(ns, N, p=pi); s = np.empty((N, L), np.int64)
+    for t in range(L):
+        Px = np.stack([T[x][st].sum(1) for x in range(V)], 1); Px = np.clip(Px, 1e-12, None); Px /= Px.sum(1, keepdims=True)
+        s[:, t] = (rng.random(N)[:, None] < np.cumsum(Px, 1)).argmax(1)
+        x = s[:, t]; tr = T[x, st] / T[x, st].sum(1, keepdims=True)
+        st = (rng.random(N)[:, None] < np.cumsum(tr, 1)).argmax(1)
+    return s
+
+
+def _collect_resid_seqs(model, seqs, hooks, device, bs=8192):
+    out = []
+    for i in range(0, len(seqs), bs):
+        inp = torch.from_numpy(seqs[i:i + bs]).to(device)
+        with torch.no_grad():
+            _, c = model.run_with_cache(inp, names_filter=lambda n: n in hooks)
+        out.append(np.concatenate([c[h].cpu().numpy() for h in hooks], -1))
+    return np.concatenate(out, 0)
+
+
+def _future_onehot(fut, H, V):
+    n = len(fut); fe = []
+    for k in range(1, H + 1):
+        idx = np.zeros(n, np.int64)
+        for j in range(k):
+            idx = idx * V + fut[:, j]
+        oh = np.zeros((n, V ** k)); oh[np.arange(n), idx] = 1.0; fe.append(oh)
+    return np.hstack(fe)
+
+
+def sample_readout_features(model, T, pi, hooks, vocab, horizon, n_seq=60000, device="cpu", seed=0):
+    """Build (X, F) for the SAMPLED multistep readout: draw n_seq sequences from the true process,
+    run them through the model, and pair each position's activation with the ONE-HOT of its observed
+    future window (k-grams up to `horizon`). Many stochastic futures per prefix -> full-rank future
+    covariance (fixes the enumeration overfitting). Returns (X (n,D), F (n,nF))."""
+    L = model.cfg.n_ctx
+    seqs = _sample_process(np.asarray(T), np.asarray(pi), n_seq, L, seed)
+    acts = _collect_resid_seqs(model, seqs, hooks, device)
+    Xs, Fs = [], []
+    for t in range(L - horizon):
+        Xs.append(acts[:, t, :]); Fs.append(_future_onehot(seqs[:, t + 1:t + 1 + horizon], horizon, vocab))
+    return np.vstack(Xs), np.vstack(Fs)
+
+
+def cca_multistep_readout(rows, A, soft, vocab, sw=None, horizon=4, rank=None,
+                          cc_threshold=0.05, ridge_a=1e-1, ridge_f=1e-3, sampled=None):
+    """CCA/RRR MULTI-STEP readout -- a belief-richer drop-in replacement for the 1-step ridge C.
+
+    The ridge C regresses a(w) -> next-token softmax, so it is blind to belief directions that
+    barely move the *next* token (next-token degeneracy -- the RRXOR weak mode). This instead
+    finds the activation-space directions whose CANONICAL CORRELATION with the MULTI-step future
+    (k-grams up to `horizon`) is highest. CCA whitening ranks by correlation, not magnitude, so a
+    weakly-but-consistently predictive mode survives.
+
+    sampled (preferred): (X, F) from sample_readout_features -- many stochastic futures per prefix
+    => full-rank future covariance, no overfitting. If None, falls back to ENUMERATION (only rows
+    with len(w)+horizon <= MAX_LEN; few long-future rows -> overfits at short context).
+    `rank` = readout directions to keep; None => gap-based elbow on the canonical spectrum (>= vocab).
+    Returns (C (D, rank), canonical_correlations); C is used exactly like the ridge C downstream."""
+    if sampled is not None:
+        Asub, F = sampled
+        wv = np.ones(len(Asub), float)
+        D = Asub.shape[1]
+    else:
+        from itertools import product as iproduct
+        grams = [s for k in range(1, horizon + 1) for s in iproduct(range(vocab), repeat=k)]
+        keep = [i for i, w in enumerate(rows) if len(w) + horizon <= MAX_LEN]
+        if not keep:
+            raise ValueError(f"cca readout: no rows with horizon {horizon} available (MAX_LEN={MAX_LEN})")
+        F = np.zeros((len(keep), len(grams)))
+        for r, i in enumerate(keep):
+            w = rows[i]
+            for j, s in enumerate(grams):
+                p, cur = 1.0, w
+                for t in s:
+                    if soft[cur][t] <= EPS:
+                        p = 0.0; break
+                    p *= soft[cur][t]; cur = cur + (t,)
+                F[r, j] = p
+        Asub = A[keep]
+        wv = np.ones(len(keep)) if sw is None else np.asarray(sw, float)[keep]
+        D = A.shape[1]
+    wv = wv / wv.sum()
+    Am = Asub - (wv[:, None] * Asub).sum(0)
+    Fm = F - (wv[:, None] * F).sum(0)
+    D = A.shape[1]
+    Cxx = (wv[:, None] * Am).T @ Am + ridge_a * np.eye(D)
+    Cff = (wv[:, None] * Fm).T @ Fm + ridge_f * np.eye(F.shape[1])
+    Cxf = (wv[:, None] * Am).T @ Fm
+    ex, Ux = np.linalg.eigh(Cxx); Wx = Ux @ np.diag(ex ** -0.5) @ Ux.T
+    ef, Uf = np.linalg.eigh(Cff); Wf = Uf @ np.diag(np.clip(ef, 1e-12, None) ** -0.5) @ Uf.T
+    U, s, _ = np.linalg.svd(Wx @ Cxf @ Wf, full_matrices=False)
+    if rank is None:
+        # gap-based elbow on the canonical-correlation spectrum (the CCA d-selection), floor = vocab;
+        # ignore directions already below cc_threshold so the gap is found among real modes.
+        sr = s[:max(2, int(np.sum(s > cc_threshold)) + 1)]
+        ratios = sr[:-1] / np.clip(sr[1:], 1e-12, None)
+        rank = int(max(vocab, np.argmax(ratios) + 1)) if len(ratios) else vocab
+    rank = min(rank, len(s))
+    C = Wx @ U[:, :rank]
+    C = C / (np.linalg.norm(C, axis=0, keepdims=True) + 1e-12)   # unit columns (scale-match G_x C)
+    return C, s
+
+
 def observable_subspace(resid, soft, reach, vocab, depth=3, wmap=None, use_multistep_als=True,
-                       als_max_order=2, als_n_iter=20, als_lambda_decay=0.5):
+                       als_max_order=2, als_n_iter=20, als_lambda_decay=0.5,
+                       readout="ridge", cca_horizon=4, cca_rank=None, cca_sampled_data=None):
     """Observability matrix O = [C, G_x C, G_x G_y C, ...]; its SVD gives candidate
     belief directions ordered by strength. Columns of O are the rescaled multi-step
     observables P(x..|w)*P(.|w x..), each LINEAR in belief, spanning belief as depth grows.
@@ -60,13 +167,29 @@ def observable_subspace(resid, soft, reach, vocab, depth=3, wmap=None, use_multi
     (the post-quantum paper's P(w)-weighting). None => uniform (backwards-compatible).
 
     use_multistep_als (default True): refine operators using multi-step ALS after initial fit.
-    als_max_order, als_n_iter: parameters for the ALS refinement."""
+    als_max_order, als_n_iter: parameters for the ALS refinement.
+
+    readout: "ridge" (default, exact 1-step softmax readout), "cca" (replace C with the CCA/RRR
+    MULTI-step readout, which sees belief modes the next-token readout misses), or "ridge+cca"
+    (concatenate both, scale-matched: the exact 1-step readout for the strongly-observable modes
+    PLUS the CCA directions for the weak ones -- monotone-safe, can't hurt). Operators and the
+    rest of the pipeline are identical for all three."""
     rows = [w for w in resid if reach[w] and all((w + (x,)) in resid and reach[w + (x,)]
                                                   for x in range(vocab) if soft[w][x] > EPS)]
     A = np.stack([resid[w] for w in rows]); P = np.stack([soft[w] for w in rows])
     sw = None if wmap is None else np.array([max(float(wmap.get(w, 0.0)), 1e-12) for w in rows])
 
-    C = Ridge(alpha=RIDGE, fit_intercept=False).fit(A, P, sample_weight=sw).coef_.T   # (D, V)
+    C = Ridge(alpha=RIDGE, fit_intercept=False).fit(A, P, sample_weight=sw).coef_.T   # (D, V) 1-step readout
+    if readout in ("cca", "ridge+cca"):
+        C_cca, cca_cc = cca_multistep_readout(rows, A, soft, vocab, sw=sw, horizon=cca_horizon,
+                                              rank=cca_rank, sampled=cca_sampled_data)
+        src = "sampled" if cca_sampled_data is not None else "enumeration"
+        print(f"  [cca-readout/{src}] horizon={cca_horizon} rank={C_cca.shape[1]} canonical-corr={np.round(cca_cc[:8],3)}")
+        if readout == "cca":
+            C = C_cca
+        else:                         # ridge+cca: exact 1-step readout (scale-matched) + CCA directions
+            Cn = C / (np.linalg.norm(C, axis=0, keepdims=True) + 1e-12)
+            C = np.hstack([Cn, C_cca])
     Gs = []
     for x in range(vocab):
         m = np.array([soft[w][x] > EPS for w in rows])
@@ -90,6 +213,82 @@ def observable_subspace(resid, soft, reach, vocab, depth=3, wmap=None, use_multi
     return rows, A, P, Gs, U, sv
 
 
+def observable_subspace_logit(resid, logit, reach, vocab, depth=3, wmap=None,
+                              rescale=False, soft=None, intercept=True):
+    """LOGIT ("energy-based" / EHMM) spectral-OOM -- the sister estimator to observable_subspace
+    for networks whose residual stream is linear in the *logit*-based predictive vector rather
+    than the *probability*-based belief (cf. the EHMM of Poncini's "computational mechanics for
+    logits", and the fact that a transformer's logits are a LINEAR readout of the residual stream
+    while its softmax is not).
+
+    Two coherent changes vs the softmax estimator, both dictated by the EHMM update
+    eta(wx)=eta(w)H^x (eq. 22 there), which is linear with NO normaliser:
+      (1) readout C regresses a(w) -> LOGITS z(.|w)  (linear in eta), not the softmax;
+      (2) operators are fit PLAIN, a(w) A_x ~ a(wx), with NO P(x|w) rescaling, because there is
+          no projective normaliser to clear (set rescale=True, soft=... to recover the HMM-style
+          rescaled target as a diagnostic).
+    `intercept` absorbs the affine offset c per-regression (recommended; True). Everything
+    downstream -- the observability stacking [C | A_x C | ...] and its SVD -- is IDENTICAL to
+    observable_subspace, so the two are drop-in comparable. Returns (rows, A, Z, Gs, U, sv) with
+    Z the stacked logits (the analogue of P)."""
+    rows = [w for w in resid if reach[w] and all((w + (x,)) in resid and reach[w + (x,)]
+                                                  for x in range(vocab))]
+    A = np.stack([resid[w] for w in rows])
+    Z = np.stack([logit[w] for w in rows])                      # (N, V) raw logits
+    sw = None if wmap is None else np.array([max(float(wmap.get(w, 0.0)), 1e-12) for w in rows])
+
+    C = Ridge(alpha=RIDGE, fit_intercept=intercept).fit(A, Z, sample_weight=sw).coef_.T   # (D, V) logit readout
+    Gs = []
+    for x in range(vocab):
+        child = np.stack([resid[w + (x,)] for w in rows])
+        if rescale:
+            if soft is None:
+                raise ValueError("rescale=True needs soft=... (the model softmax) for the P(x|w) factor")
+            P = np.stack([soft[w] for w in rows])
+            tgt = P[:, x:x + 1] * child                         # HMM-style rescaled target (diagnostic)
+        else:
+            tgt = child                                         # EHMM: plain next-step activation
+        Gs.append(Ridge(alpha=RIDGE, fit_intercept=intercept).fit(A, tgt, sample_weight=sw).coef_.T)
+
+    cols, frontier = [C], [C]                                   # identical observability stacking
+    for _ in range(depth - 1):
+        nxt = [Gx @ f for Gx in Gs for f in frontier]
+        cols += nxt; frontier = nxt
+    O = np.hstack(cols)
+    U, sv, _ = np.linalg.svd(O, full_matrices=False)
+    return rows, A, Z, Gs, U, sv
+
+
+def transition_linearity_diagnostic(resid, soft, reach, vocab, seed=0, train_frac=0.7, p_floor=1e-2):
+    """Fair, same-target test of which update law the residual stream obeys (HMM vs EHMM),
+    target-free (activations + model softmax only). Predict the SAME next activation a(wx) two
+    ways and compare HELD-OUT R^2 on the identical target:
+      EHMM:  a_hat(wx) = a(w) A^plain_x           (A^plain fit on  a(w) -> a(wx))
+      HMM:   a_hat(wx) = a(w) A^resc_x / P(x|w)    (A^resc fit on  a(w) -> P(x|w) a(wx), then /P)
+    Higher R^2 => that process class better describes the representation. Scored only on reachable
+    transitions with P(x|w) > p_floor (the HMM inversion divides by P, ill-posed as P->0). Returns
+    (r2_ehmm, r2_hmm)."""
+    rows = [w for w in resid if reach[w] and all((w + (x,)) in resid and reach[w + (x,)]
+                                                  for x in range(vocab))]
+    A = np.stack([resid[w] for w in rows])
+    perm = np.random.default_rng(seed).permutation(len(rows))
+    ntr = int(train_frac * len(rows)); tr, te = perm[:ntr], perm[ntr:]
+    num_e = den = num_h = 0.0
+    for x in range(vocab):
+        child = np.stack([resid[w + (x,)] for w in rows])
+        P = np.array([soft[w][x] for w in rows])
+        keep = P[te] > p_floor
+        if keep.sum() == 0:
+            continue
+        Ae = Ridge(alpha=RIDGE, fit_intercept=True).fit(A[tr], child[tr])
+        pe = Ae.predict(A[te][keep])
+        Ah = Ridge(alpha=RIDGE, fit_intercept=True).fit(A[tr], (P[:, None] * child)[tr])
+        ph = Ah.predict(A[te][keep]) / P[te][keep][:, None]
+        y = child[te][keep]; sstot = ((y - y.mean(0)) ** 2).sum()
+        num_e += ((y - pe) ** 2).sum(); num_h += ((y - ph) ** 2).sum(); den += sstot
+    return 1.0 - num_e / den, 1.0 - num_h / den
+
+
 def analytic_prefix_probs(resid, T, pi):
     """{prefix: P(w)} via the belief-update product, for transition tensor T and start pi.
     Forbidden prefixes get 0. Used as the P(w) sample-weights for the subspace/operator fits."""
@@ -105,239 +304,199 @@ def analytic_prefix_probs(resid, T, pi):
     return out
 
 
-def fit_operators_multistep_als(rows, A, P, resid, soft, vocab, Gs_init, max_order=3,
-                               ridge_base=RIDGE, lambda_decay=0.5, n_iter=50, tol=1e-6, sw=None):
-    """Refine operators {A_x} using multi-step ALS (alternating least squares).
+def _cg_matrix(apply, B, X0, iters, tol):
+    """Conjugate gradients for a symmetric-PD matrix operator  apply(X) = B,  with the
+    unknown X a (D, D) matrix and the Frobenius inner product. Used to solve the summed
+    -Sylvester normal equations  Σ_t P_t X Q_t + λ X = B  (each P_t, Q_t PSD => apply SPD)."""
+    X = X0
+    R = B - apply(X)
+    Pp = R.copy()
+    rs = float(np.sum(R * R))
+    b2 = float(np.sum(B * B)) + 1e-30
+    for _ in range(iters):
+        if rs / b2 < tol * tol:
+            break
+        Ap = apply(Pp)
+        denom = float(np.sum(Pp * Ap))
+        if denom <= 1e-30:
+            break
+        alpha = rs / denom
+        X = X + alpha * Pp
+        R = R - alpha * Ap
+        rs_new = float(np.sum(R * R))
+        Pp = R + (rs_new / rs) * Pp
+        rs = rs_new
+    return X
 
-    Starts from one-step ridge operators Gs_init and iteratively improves them by fitting
-    against multi-step targets up to order max_order. Each ALS iteration holds all but one
-    operator fixed and solves a linear ridge regression for that operator.
 
-    Key implementation detail: for higher-order terms where j is not at position 1, the design
-    matrix must be the composition of preceding operators (e.g., A @ Gs[y] for j at position 2),
-    not the actual intermediate activations. This ensures the problem remains linear in A_j.
+def fit_operators_multistep_als(rows, A, P, resid, soft, vocab, Gs_init, max_order=2,
+                                ridge_base=RIDGE, lambda_decay=0.5, n_iter=20, tol=1e-6, sw=None,
+                                cg_iters=300, cg_tol=1e-9, verbose=True):
+    r"""Refine operators {A_x} by minimising the *shared-operator* multi-step loss
 
-    Args:
-        rows: list of prefix tuples (must match order of A and P)
-        A: (n_rows, D) activation matrix
-        P: (n_rows, vocab) softmax matrix
-        resid: {prefix -> activation} dict
-        soft: {prefix -> softmax logits} dict
-        vocab: vocabulary size
-        Gs_init: list of vocab initial (D, D) operator matrices
-        max_order: maximum step order K to include (1, 2, ..., max_order)
-        ridge_base: base ridge lambda for order-1 terms
-        lambda_decay: multiplicative decay of ridge lambda per order (default 0.5)
-        n_iter: max ALS iterations (default 50)
-        tol: convergence tolerance on operator change (Frobenius norm)
-        sw: optional (n_rows,) sample weights P(w); None => uniform
+        L = Sum_k  lam_k Sum_{x_1..x_k}  || a(w) A_{x_1}..A_{x_k}
+                                            - P(x_1..x_k|w) a(w x_1..x_k) ||^2_{P(w)}
 
-    Returns:
-        Gs_refined: list of refined operators (same shape as Gs_init)
+    over all words up to order K = max_order, with the SAME operators appearing in every
+    term. The order-1 term anchors each operator's one-step duty; the higher-order terms
+    constrain the products, which is where weakly-observable belief directions live (the
+    multi-step version of RRXOR's next-token degeneracy). lam_k = lambda_decay**(k-1) is
+    the order-k loss weight (decayed in k because high-order words are rare / noise-dominated),
+    sw are the P(w) sample weights (None => uniform), ridge_base is the per-solve ridge.
+
+    Optimised by alternating least squares (ALS): hold every operator but A_j fixed and
+    solve the resulting linear sub-problem for A_j, starting from the one-step ridge fit.
+
+    Why the previous implementation was wrong, and what is fixed here
+    ----------------------------------------------------------------
+    When A_j sits at a *non-terminal* position p of a length-k word x_1..x_k its term is
+
+        ell(w) . A_j . M  ~=  y ,     ell(w) = a(w) prod_{q<p} A_{x_q},
+                                      M       = prod_{q>p} A_{x_q}  (fixed),
+                                      y       = P(x_1..x_k|w) a(w x_1..x_k).
+
+    This is linear in A_j but it is a *Sylvester* least-squares problem, whose normal
+    equations are
+
+        Sum_t  P_t A_j Q_t  +  lam A_j  =  Sum_t R_t ,
+        P_t = ell^T W ell,   Q_t = M M^T,   R_t = ell^T W y M^T.
+
+    The earlier code instead stacked (a(w), y) and called an ordinary ridge fit
+    a(w) A_j ~= y, dropping the trailing factor M entirely -- correct ONLY when A_j is the
+    rightmost factor (M = I, so Q_t = I and the equation collapses to ordinary ridge). For
+    every interior position that corrupts the operator. Here we keep the full M and solve
+    the summed-Sylvester normal equations directly with matrix conjugate gradients, so every
+    position -- and repeated occurrences of A_j within one word, e.g. (j, j) -- is handled
+    correctly (each occurrence contributes one term, the other occurrence held at its
+    current value, the usual ALS linearisation).
+
+    Efficiency: the operator-free per-pattern moments  Sxx = a(w)^T W a(w)  and
+    Sxy = a(w)^T W y  are precomputed ONCE per token-pattern; every ALS sweep then only
+    forms small (D, D) operator products  L^T Sxx L  and  Sxy M^T, so per-sweep cost is
+    independent of the number of prefixes.
+
+    Returns the refined operator list (same shapes as Gs_init).
     """
+    from itertools import product as iproduct
+
     Gs = [G.copy() for G in Gs_init]
-    n_rows = len(rows)
     D = Gs[0].shape[0]
+    w_all = np.ones(len(rows)) if sw is None else np.asarray(sw, dtype=float)
 
-    # Pre-compute one-step targets for diagnostics
-    one_step_targets = {}  # {x: (X_1, Y_1, W_1)}
-    for x in range(vocab):
-        X_1 = []
-        Y_1 = []
-        W_1 = []
-        for i, w in enumerate(rows):
-            if soft[w][x] > EPS:
-                wx = w + (x,)
-                if wx in resid:
-                    X_1.append(A[i])
-                    Y_1.append(soft[w][x] * resid[wx])
-                    W_1.append(sw[i] if sw is not None else 1.0)
-        if X_1:
-            one_step_targets[x] = (np.array(X_1), np.array(Y_1), np.array(W_1))
+    # ---- one-time precompute: for every token pattern s (|s| = 1..K) collect the valid
+    #      (parent, rescaled-child) pairs and reduce them to the fixed moments Sxx, Sxy.
+    #      Validity / rescale / child are data-only (independent of the operators), so this
+    #      is done once; the operators enter only through L, M products built per sweep. ----
+    pats = []
+    for k in range(1, max_order + 1):
+        ow = lambda_decay ** (k - 1)                       # order-k loss weight
+        for s in iproduct(range(vocab), repeat=k):
+            idx, resc, child = [], [], []
+            for i, w in enumerate(rows):
+                cur, r, ok = w, 1.0, True
+                for t in s:
+                    pr = soft[cur][t] if cur in soft else 0.0
+                    nxt = cur + (t,)
+                    if pr <= EPS or nxt not in resid:      # chain-rule rescale + reachability
+                        ok = False; break
+                    r *= pr; cur = nxt
+                if ok:
+                    idx.append(i); resc.append(r); child.append(resid[cur])
+            if not idx:
+                continue
+            idx = np.array(idx)
+            wts = w_all[idx][:, None]
+            par = A[idx]                                    # (n, D)  ell_0 = a(w)
+            tgt = np.array(resc)[:, None] * np.stack(child)  # (n, D)  P(s|w) a(ws)
+            Sxx = par.T @ (wts * par)                       # (D, D)  operator-free Gram
+            Sxy = par.T @ (wts * tgt)                       # (D, D)  operator-free cross moment
+            Syy = float(np.sum(wts * tgt * tgt))            # scalar (one-step diagnostic only)
+            pats.append(dict(s=s, k=k, ow=ow, Sxx=Sxx, Sxy=Sxy, Syy=Syy, wsum=float(wts.sum())))
 
-    def compute_one_step_residual():
-        """Compute weighted MSE for one-step predictions."""
-        total_mse = 0.0
-        total_weight = 0.0
-        for x in range(vocab):
-            if x in one_step_targets:
-                X_1, Y_1, W_1 = one_step_targets[x]
-                pred = X_1 @ Gs[x]
-                mse = np.sum(W_1[:, None] * (pred - Y_1) ** 2)
-                total_mse += mse
-                total_weight += W_1.sum()
-        return total_mse / max(total_weight, 1e-12) if total_weight > 0 else np.nan
+    one_step = {p["s"][0]: p for p in pats if p["k"] == 1}
 
-    # Record initial one-step quality
-    initial_one_step_mse = compute_one_step_residual()
-    print(f"  [ALS init] one-step MSE={initial_one_step_mse:.3e}")
+    def left_prod(s, p):
+        M = None
+        for q in range(p):
+            M = Gs[s[q]] if M is None else M @ Gs[s[q]]
+        return M                                            # None == identity
+
+    def right_prod(s, p):
+        M = None
+        for q in range(p + 1, len(s)):
+            M = Gs[s[q]] if M is None else M @ Gs[s[q]]
+        return M                                            # None == identity
+
+    def one_step_mse():
+        """Weighted one-step MSE  Sum w || a(w) A_x - P(x|w) a(wx) ||^2 / Sum w  -- must not
+        regress as higher orders are added (the shared-operator anchor)."""
+        num = den = 0.0
+        for x, pd in one_step.items():
+            G = Gs[x]
+            num += float(np.trace(G.T @ pd["Sxx"] @ G) - 2.0 * np.trace(G.T @ pd["Sxy"]) + pd["Syy"])
+            den += pd["wsum"]
+        return num / max(den, 1e-12)
+
+    def solve_operator(j):
+        """ALS sub-solve for A_j: assemble Sum_t P_t A_j Q_t + ridge A_j = Sum_t R_t over
+        every (pattern, position) in which token j appears, then solve by matrix-CG."""
+        PI = np.zeros((D, D))      # accumulated P_t for the M = I (rightmost) terms
+        RHS = np.zeros((D, D))     # accumulated Sum_t R_t
+        syl = []                   # (P_t, Q_t) for the genuine Sylvester (M != I) terms
+        for pd in pats:
+            s = pd["s"]
+            for p in range(pd["k"]):
+                if s[p] != j:
+                    continue
+                L = left_prod(s, p)
+                Mr = right_prod(s, p)
+                Sxx = pd["Sxx"] if L is None else L.T @ pd["Sxx"] @ L
+                Sxy = pd["Sxy"] if L is None else L.T @ pd["Sxy"]
+                Sxx = pd["ow"] * Sxx
+                Sxy = pd["ow"] * Sxy
+                if Mr is None:                              # rightmost factor: ordinary ridge block
+                    PI += Sxx
+                    RHS += Sxy
+                else:                                       # interior factor: Sylvester block
+                    syl.append((Sxx, Mr @ Mr.T))
+                    RHS += Sxy @ Mr.T
+        if not PI.any() and not syl:
+            return Gs[j]
+
+        def apply(X):
+            Y = PI @ X + ridge_base * X
+            for Pt, Q in syl:
+                Y = Y + Pt @ X @ Q
+            return Y
+
+        return _cg_matrix(apply, RHS, Gs[j].copy(), cg_iters, cg_tol)
+
+    init_mse = one_step_mse()
+    if verbose:
+        print(f"  [multistep-ALS] K={max_order}  patterns={len(pats)}  init one-step MSE={init_mse:.3e}")
 
     converged = False
-    for ais_iter in range(n_iter):
-        max_delta = 0.0
-
-        # Update each operator in turn
+    delta = mse = np.nan
+    for it in range(n_iter):
+        delta = 0.0
         for j in range(vocab):
-            # Collect all design matrices and targets involving operator j across all orders
-            X_blocks = []
-            Y_blocks = []
-            W_blocks = []
-
-            # ===== ORDER 1: a(w) A_j ≈ P(j|w) a(wj) =====
-            X_1 = []
-            Y_1 = []
-            W_1 = []
-            for i, w in enumerate(rows):
-                if soft[w][j] > EPS:
-                    wj = w + (j,)
-                    if wj in resid:
-                        X_1.append(A[i])
-                        Y_1.append(soft[w][j] * resid[wj])
-                        W_1.append(sw[i] if sw is not None else 1.0)
-
-            if X_1:
-                X_blocks.append(np.array(X_1))
-                Y_blocks.append(np.array(Y_1))
-                W_blocks.append(np.array(W_1))
-
-            # ===== ORDER 2 =====
-            if max_order >= 2:
-                # j at position 1: a(w) A_j A_y ≈ P(jy|w) a(wjy)
-                for y in range(vocab):
-                    X_2 = []
-                    Y_2 = []
-                    W_2 = []
-                    for i, w in enumerate(rows):
-                        if (soft[w][j] > EPS and w + (j,) in resid and w + (j,) in soft and
-                            soft[w + (j,)][y] > EPS and w + (j, y) in resid):
-                            rescale = soft[w][j] * soft[w + (j,)][y]
-                            X_2.append(A[i])
-                            Y_2.append(rescale * resid[w + (j, y)])
-                            W_2.append(sw[i] if sw is not None else 1.0)
-
-                    if X_2:
-                        X_blocks.append(np.array(X_2))
-                        Y_blocks.append(np.array(Y_2))
-                        W_blocks.append(np.array(W_2))
-
-                # j at position 2: a(w) A_y A_j ≈ P(yj|w) a(wyj)
-                # CORRECT: design matrix is A @ A_y (operator composition), not a(wy)
-                for y in range(vocab):
-                    X_2 = []
-                    Y_2 = []
-                    W_2 = []
-                    for i, w in enumerate(rows):
-                        if (soft[w][y] > EPS and w + (y,) in resid and w + (y,) in soft and
-                            soft[w + (y,)][j] > EPS and w + (y, j) in resid):
-                            rescale = soft[w][y] * soft[w + (y,)][j]
-                            X_2.append(A[i] @ Gs[y])  # FIXED: operator composition, not actual activation
-                            Y_2.append(rescale * resid[w + (y, j)])
-                            W_2.append(sw[i] if sw is not None else 1.0)
-
-                    if X_2:
-                        X_blocks.append(np.array(X_2))
-                        Y_blocks.append(np.array(Y_2))
-                        W_blocks.append(np.array(W_2))
-
-            # ===== ORDER 3 =====
-            if max_order >= 3:
-                # j at position 1: a(w) A_j A_y A_z ≈ P(jyz|w) a(wjyz)
-                for y in range(vocab):
-                    for z in range(vocab):
-                        X_3 = []
-                        Y_3 = []
-                        W_3 = []
-                        for i, w in enumerate(rows):
-                            if (soft[w][j] > EPS and w + (j,) in resid and w + (j,) in soft and
-                                soft[w + (j,)][y] > EPS and w + (j, y) in resid and w + (j, y) in soft and
-                                soft[w + (j, y)][z] > EPS and w + (j, y, z) in resid):
-                                rescale = soft[w][j] * soft[w + (j,)][y] * soft[w + (j, y)][z]
-                                X_3.append(A[i])
-                                Y_3.append(rescale * resid[w + (j, y, z)])
-                                W_3.append(sw[i] if sw is not None else 1.0)
-
-                        if X_3:
-                            X_blocks.append(np.array(X_3))
-                            Y_blocks.append(np.array(Y_3))
-                            W_blocks.append(np.array(W_3))
-
-                # j at position 2: a(w) A_y A_j A_z ≈ P(yjz|w) a(wyjz)
-                # CORRECT: design matrix is A @ A_y
-                for y in range(vocab):
-                    for z in range(vocab):
-                        X_3 = []
-                        Y_3 = []
-                        W_3 = []
-                        for i, w in enumerate(rows):
-                            if (soft[w][y] > EPS and w + (y,) in resid and w + (y,) in soft and
-                                soft[w + (y,)][j] > EPS and w + (y, j) in resid and w + (y, j) in soft and
-                                soft[w + (y, j)][z] > EPS and w + (y, j, z) in resid):
-                                rescale = soft[w][y] * soft[w + (y,)][j] * soft[w + (y, j)][z]
-                                X_3.append(A[i] @ Gs[y])  # FIXED: operator composition
-                                Y_3.append(rescale * resid[w + (y, j, z)])
-                                W_3.append(sw[i] if sw is not None else 1.0)
-
-                        if X_3:
-                            X_blocks.append(np.array(X_3))
-                            Y_blocks.append(np.array(Y_3))
-                            W_blocks.append(np.array(W_3))
-
-                # j at position 3: a(w) A_y A_z A_j ≈ P(yzj|w) a(wyzj)
-                # CORRECT: design matrix is A @ A_y @ A_z
-                for y in range(vocab):
-                    for z in range(vocab):
-                        X_3 = []
-                        Y_3 = []
-                        W_3 = []
-                        for i, w in enumerate(rows):
-                            if (soft[w][y] > EPS and w + (y,) in resid and w + (y,) in soft and
-                                soft[w + (y,)][z] > EPS and w + (y, z) in resid and w + (y, z) in soft and
-                                soft[w + (y, z)][j] > EPS and w + (y, z, j) in resid):
-                                rescale = soft[w][y] * soft[w + (y,)][z] * soft[w + (y, z)][j]
-                                X_3.append(A[i] @ Gs[y] @ Gs[z])  # FIXED: full operator composition
-                                Y_3.append(rescale * resid[w + (y, z, j)])
-                                W_3.append(sw[i] if sw is not None else 1.0)
-
-                        if X_3:
-                            X_blocks.append(np.array(X_3))
-                            Y_blocks.append(np.array(Y_3))
-                            W_blocks.append(np.array(W_3))
-
-            # Assemble and solve the ridge regression for operator j
-            if X_blocks:
-                X_all = np.vstack(X_blocks)
-                Y_all = np.vstack(Y_blocks)
-                W_all = np.concatenate(W_blocks)
-
-                ridge = Ridge(alpha=ridge_base, fit_intercept=False)
-                ridge.fit(X_all, Y_all, sample_weight=W_all)
-                G_new = ridge.coef_.T
-
-                # Track convergence
-                delta = np.linalg.norm(G_new - Gs[j], 'fro')
-                max_delta = max(max_delta, delta)
-                Gs[j] = G_new
-
-        # Compute and monitor one-step residual
-        one_step_mse = compute_one_step_residual()
-        mse_ratio = one_step_mse / initial_one_step_mse if initial_one_step_mse > 0 else 1.0
-
-        # Diagnostic output
-        if (ais_iter + 1) % 5 == 0 or ais_iter == 0 or ais_iter == n_iter - 1:
-            print(f"    [ALS iter {ais_iter+1:2d}/{n_iter}] delta={max_delta:.2e}  one-step MSE={one_step_mse:.3e} (ratio={mse_ratio:.3f})")
-
-        # Warn if one-step quality is degrading significantly
-        if mse_ratio > 1.5:
-            print(f"    WARNING: one-step MSE degraded to {mse_ratio:.1f}× initial; consider reducing lambda_decay")
-
-        if max_delta < tol:
+            Gnew = solve_operator(j)
+            delta = max(delta, float(np.linalg.norm(Gnew - Gs[j])))
+            Gs[j] = Gnew
+        mse = one_step_mse()
+        ratio = mse / max(init_mse, 1e-30)
+        if verbose and (it == 0 or (it + 1) % 5 == 0 or it == n_iter - 1):
+            print(f"    [ALS iter {it+1:2d}/{n_iter}] delta={delta:.2e}  one-step MSE={mse:.3e} (ratio={ratio:.3f})")
+        if ratio > 1.5 and verbose:
+            print(f"    WARNING: one-step MSE degraded to {ratio:.1f}x initial; consider raising lambda_decay")
+        if delta < tol:
             converged = True
-            print(f"  [multistep-ALS] converged after {ais_iter + 1} iterations (delta={max_delta:.2e})")
+            if verbose:
+                print(f"  [multistep-ALS] converged after {it+1} iters (delta={delta:.2e})")
             break
 
-    if not converged:
-        print(f"  [multistep-ALS] did not converge after {n_iter} iters (final delta: {max_delta:.2e}, one-step MSE ratio: {mse_ratio:.3f})")
-
+    if verbose and not converged:
+        print(f"  [multistep-ALS] stopped at {n_iter} iters (delta={delta:.2e}, one-step MSE ratio={mse/max(init_mse,1e-30):.3f})")
     return Gs
 
 
@@ -436,6 +595,43 @@ def _collect(model, T, stationary, device):
                 resid[w] = concat[j]; soft[w] = sm[j]
                 b = bp(w); belief[w] = b if b is not None else np.full(NS, np.nan); pp[w] = 0.0
     return resid, soft, belief, pp
+
+
+def _collect_logits(model, T, stationary, device):
+    """Same enumeration as _collect, but ALSO keeps the model's raw pre-softmax LOGITS per
+    prefix (needed by observable_subspace_logit; the per-prefix log-partition is lost in the
+    softmax, so logits cannot be reconstructed from `soft`). Returns
+    (resid, soft, logit, belief, pp)."""
+    import itertools
+    nL = model.cfg.n_layers
+    hooks = [f"blocks.{i}.hook_resid_post" for i in range(nL)]
+    NS = T.shape[1]
+
+    def ndist(b): return np.array([(b @ T[x]).sum() for x in range(T.shape[0])])
+    def upd(b, x): nb = b @ T[x]; return nb / nb.sum()
+    def bp(w):
+        b, p = stationary, 1.0
+        for x in w:
+            dd = ndist(b); p *= dd[x]
+            if dd[x] < 1e-12: return None
+            b = upd(b, x)
+        return b
+
+    resid, soft, logit, belief, pp = {}, {}, {}, {}, {}
+    for L in range(1, MAX_LEN + 1):
+        strs = np.array(list(itertools.product(range(T.shape[0]), repeat=L)), dtype=np.int64)
+        for i in range(0, len(strs), 4096):
+            inp = torch.from_numpy(strs[i:i + 4096]).to(device)
+            with torch.no_grad():
+                logits, c = model.run_with_cache(inp, names_filter=lambda n: n in hooks)
+            concat = np.concatenate([c[h][:, -1, :].cpu().numpy() for h in hooks], axis=-1)
+            lg = logits[:, -1, :].cpu().numpy()
+            sm = torch.softmax(logits[:, -1, :], -1).cpu().numpy()
+            for j, sct in enumerate(strs[i:i + 4096]):
+                w = tuple(int(t) for t in sct)
+                resid[w] = concat[j]; soft[w] = sm[j]; logit[w] = lg[j]
+                b = bp(w); belief[w] = b if b is not None else np.full(NS, np.nan); pp[w] = 0.0
+    return resid, soft, logit, belief, pp
 
 
 def depth_curve(res, depths=(2, 3, 4, 5, 6, 8)):

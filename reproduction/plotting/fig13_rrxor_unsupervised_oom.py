@@ -36,7 +36,7 @@ import torch
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.transition_matrices import rrxor
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 import fig09_rrxor_ground_truth as B  # distinct_colors only
 
 P1 = P2 = 0.5

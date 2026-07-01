@@ -12,12 +12,12 @@ from sklearn.linear_model import LinearRegression
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 import stage1_cca_general as S1
 
 ZOR_PARAMS = {"p": 0.5}
-FIG_DIR = Path(__file__).parent.parent / "figures"
-MODEL_DIR = Path(__file__).parent.parent / "models"
+FIG_DIR = Path(__file__).parent / "figures"
+MODEL_DIR = Path(__file__).parent / "models"
 D = 3
 
 

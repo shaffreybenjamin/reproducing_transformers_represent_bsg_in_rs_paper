@@ -5,6 +5,33 @@ This folder contains all exploratory code, diagnostic scripts, alternative metho
 **Created:** 2026-06-21  
 **Total size:** ~30 MB
 
+## 2026-06-30 batch — two-stage estimator & d_selection (retired threads)
+
+A second archival pass. Threads confirmed finished and moved here:
+
+- **Two-stage estimator** (superseded by the consistent-CCA approach):
+  `_unused_code/two_stage/` — the `stage0/stage1/stage2` pipeline
+  (`run_two_stage_estimator.py`, `stage1_general.py`, `stage1_cca_general.py`,
+  `*_output.pkl`), the `fig*_principled_stage1.py` / `fig_stage0_gate` /
+  `fig_stage2_cluster_separation` plot variants, and `fig14_cca_rrr_estimator_twostage.py`.
+  Matching outputs in `_unused_figures/` (`*_principled_stage1.png`,
+  `stage2_cluster_separation_results.png`). Docs in `_unused_docs/`
+  (`TWO_STAGE_*`, `QUICK_START_TWO_STAGE.md`, `two_stage_estimator_spec.md`).
+- **d_selection sweep** (model-order elbow study, conclusions folded into method):
+  `_unused_code/d_selection/` — the `fig1_*_d_selection.py` plots plus the whole
+  `d_selection/` and `d_selection_results/` directories. Doc: `IMPLEMENTATION_D_SELECTION.md`.
+- **Stale reports & logs** → `_unused_docs/` (`RESULTS_SUMMARY.md`,
+  `IMPLEMENTATION_REVIEW.md`, `IMPLEMENTATION_SUMMARY.md`, `RRXOR_OPERATOR_ANALYSIS.md`,
+  `OPERATOR_COMPARISON_MESS3_VS_RRXOR.md`, `REPO_ORGANIZATION.md`, `compass_artifact_*.md`)
+  and `_unused_logs_artifacts/` (empty/old run logs, orphaned `writeup.*` LaTeX build files
+  from the retired `writeup.tex`).
+
+**Deliberately KEPT in the live tree** (do not assume these are dead): the Hankel
+two-factor estimator (`estimators/spectral_oom_hankel.py`, `run_hankel_*`, `fig1_*_hankel.py`),
+`fig7_8_operator_rollouts_simplex.py`, all current `_*.py` CCA/Hankel exploration,
+the 7-process `fig1_*_principled.py`, and the library modules imported by the writeup
+generators (`fig09/fig10/fig13/fig14/fig16`, `fig8_10_unified_best`, `unsupervised_belief_oom`).
+
 ## Contents
 
 ### `_unused_code/` — 35 files

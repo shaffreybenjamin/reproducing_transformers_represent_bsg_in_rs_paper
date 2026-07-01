@@ -211,6 +211,198 @@ exactly as the observability construction is, because~\eqref{eq:reach-act} produ
 \emph{un-normalised} $P(w)\,a(w)$, so high-probability prefixes already carry larger norm and
 dominate the SVD, matching the weighting of $\mathcal{O}$ and of the supervised decode.
 
+% =====================================================================
+%  Refined spectral-OOM estimator: metric-correct recovery
+%  Drop-in replacement / extension for the estimator subsection.
+%  Requires: amsmath, amssymb. Reuses labels eq:update, eq:linearise,
+%  eq:obsmat, eq:reachmat from the existing text.
+% =====================================================================
+
+\subsection{Metric-correct recovery of the belief subspace}
+\label{sec:refined-estimator}
+
+The estimator of Section~\ref{sec:estimator} makes three implicit choices that are
+harmless when belief is \emph{strongly observable} but that systematically lose the weak
+belief modes when it is not. First, it ranks directions by the ordinary (Euclidean)
+singular values of the observability matrix $\mathcal{O}$, which conflate ``large in
+activation norm'' with ``important for belief''. Second, it estimates the operators
+$\{A_x\}$ by independent per-symbol regressions and only then composes them, discarding the
+fact that they share a common invariant subspace. Third, it reads the model order $d$ off an
+elbow in that Euclidean spectrum, which need not exist. On Mess3 all three choices are
+benign---belief aligns with the next-token observable, the spectrum has a clean elbow, and
+the per-symbol fits already suffice. On RRXOR each one fails, and the failures compound: the
+belief-discriminating directions are precisely those that move the next token least
+(\emph{next-token degeneracy}), so they carry small Euclidean singular values, no elbow
+marks them, and no single operator exposes them.
+
+This section replaces each Euclidean choice with its metric-correct counterpart. The
+construction is unchanged in spirit---it still uses only activations, the model softmax, and
+the prefix tree---but it (a)~handles the affine offset correctly, (b)~weights output
+directions by the Fisher metric of the next-token simplex, (c)~ranks belief directions by
+basis-independent Hankel singular values obtained by balancing the controllability and
+observability Gramians, (d)~recovers the operators' \emph{common} invariant subspace rather
+than fitting them independently, and (e)~selects the model order by spectral projection,
+which is robust to the non-diagonalisable operator algebra of processes like RRXOR.
+
+\paragraph{The affine offset.}
+The encoding is affine, $a(w)=b(w)\Psi+c$ (Section~\ref{sec:estimator}). The rescaled
+relation~\eqref{eq:linearise} is linear in $b(w)$ only after the constant $c$ is removed, but
+$c$ cannot be removed by a single global re-centring of activations: the rescaling by
+$P(x|w)$ in the child target makes the offset's contribution prefix-dependent,
+\begin{equation}
+P(x\,|\,w)\,\bigl(a(wx)-\bar c\bigr)\;\neq\;P(x\,|\,w)\,a(wx)\;-\;\bar c ,
+\label{eq:offset-noncommute}
+\end{equation}
+so subtracting a fixed $\bar c$ from the rescaled child corrupts the fit. The correct remedy
+is to fit \emph{every} regression below (each $A_x$, the readout $C$, and the subspace
+operators) \emph{with its own intercept}. Each fit then absorbs its own offset, the operator
+$A_x$ is estimated on the linear part $b(w)\Psi$ alone, and the intercept is discarded for
+the spectral analysis---the belief subspace is spanned by the linear maps, not by the
+offsets. We write $\widetilde a(w)$ for the activation with its regression intercept removed
+and use it implicitly in what follows.
+
+\paragraph{A Fisher-metric readout.}
+The readout $C$ regresses activations onto the next-token row $P(\cdot\,|\,w)$. Scored in the
+ordinary Euclidean output geometry, this treats all coordinates of the simplex alike. But
+belief states are points in a probability simplex, and the meaningful output geometry is the
+Fisher--Rao metric, under which two next-token distributions are far apart when they differ
+on a \emph{rare} token. RRXOR's next-token-degenerate belief states are Euclidean-close in
+output space yet genuinely distinct; a Fisher-weighted readout separates exactly these.
+
+Concretely, for a next-token distribution $p=P(\cdot\,|\,w)$ over $V$ tokens the multinomial
+Fisher information is $g(p)=\operatorname{diag}(1/p)-\mathbf 1\mathbf 1^\top$; we use the
+diagonal surrogate $\operatorname{diag}(1/p)$, which decouples the output coordinates and so
+reduces to $V$ independent weighted ridge regressions. Writing $\mathrm{sw}_w=P(w)$ for the
+existing context weight, output column $k$ of $C$ is fit with per-row weights
+\begin{equation}
+\mathrm{sw}_w \cdot \frac{1}{\max\!\bigl(P(x{=}k\,|\,w),\,p_{\min}\bigr)} ,
+\label{eq:fisher-weight}
+\end{equation}
+with a small floor $p_{\min}$ to control near-zero token probabilities. The map $C$ is still
+$(D\times V)$ and enters every construction below unchanged; only its fit is reweighted.
+
+\paragraph{The two Gramians.}
+The observability matrix $\mathcal{O}$~\eqref{eq:obsmat} stacks futures and the
+controllability matrix $\mathcal{R}$~\eqref{eq:reachmat} stacks pasts. Their Euclidean SVDs
+rank directions by raw magnitude. The correct objects are the two \emph{Gramians}, formed in
+the right inner products: the $P(w)$ metric on the domain of contexts and an output metric on
+the range of futures. The controllability Gramian is the $P(w)$-weighted second moment of the
+reachable activations,
+\begin{equation}
+W_c \;=\; \sum_{w}\,P(w)\,\widetilde a(w)^{\!\top}\widetilde a(w)
+\;=\;\mathcal{R}^{\!\top} D_c\,\mathcal{R},
+\qquad D_c=\operatorname{diag}\bigl(P(w)\bigr),
+\label{eq:Wc}
+\end{equation}
+a $(D\times D)$ symmetric positive-semidefinite matrix measuring how strongly each activation
+direction is \emph{reached} by the process. The observability Gramian weights the future
+block of $\mathcal{O}$ by a range metric $M_o$,
+\begin{equation}
+W_o \;=\; \mathcal{O}\,M_o\,\mathcal{O}^{\!\top},
+\label{eq:Wo}
+\end{equation}
+measuring how strongly each direction is \emph{seen} in the future. Taking $M_o=I$ recovers
+the Euclidean case; the informative choices weight the length-$k$ observable block of
+$\mathcal{O}$ by $\lambda^{k}$ with $0<\lambda<1$, damping the short, next-token-biased
+futures so that the longer composites that carry the weak modes are not drowned out. Both
+Gramians are $(D\times D)$ regardless of how many pasts or futures are enumerated, so this
+step is cheap.
+
+\paragraph{Balanced truncation and Hankel singular values.}
+Ranking belief directions now means balancing reachability against observability. Take
+positive-semidefinite square roots $W_c=L_cL_c^{\!\top}$ and $W_o=L_oL_o^{\!\top}$ and form
+the SVD of their cross matrix,
+\begin{equation}
+L_c^{\!\top}L_o \;=\; U\,\Sigma\,V^{\!\top},
+\qquad \Sigma=\operatorname{diag}(\sigma_1\ge\sigma_2\ge\cdots).
+\label{eq:balanced}
+\end{equation}
+The $\sigma_k$ are the \emph{Hankel singular values} of the estimated realisation. They are
+\emph{basis-independent}---invariant under any invertible change of activation coordinates,
+unlike the raw singular values of $\mathcal{O}$---and each one weighs a mode by \emph{both}
+how reachable and how observable it is. A mode that is reached (the process visits those
+belief states, so it registers in $W_c$) but only weakly seen through the next-token readout
+(small in $W_o$) still receives a non-negligible $\sigma_k$, instead of being discarded as it
+is by the $\mathcal{O}$-SVD. The rank-$d$ belief subspace is projected by the leading balanced
+directions,
+\begin{equation}
+B \;=\; L_c\,U\,\Sigma^{-1/2}\big|_{:,\,1:d},
+\qquad s(w)=\widetilde a(w)\,B,
+\label{eq:balanced-basis}
+\end{equation}
+and the geometry is read out from $s(w)$ exactly as before. The Hankel spectrum
+$\{\sigma_k\}$ is the honest measure of how much belief structure is present: the gap between
+the modes that stand above the finite-sample noise floor and those that fall below it
+separates what is recoverable from any observational estimator from what is genuinely
+sub-floor, a distinction the Euclidean spectrum cannot make.
+
+\paragraph{Joint recovery of the operators.}
+The operators $\{A_x\}$ share a common invariant subspace---the belief subspace---because
+each is $A_x=\Psi^{+}T^x\Psi$ with the \emph{same} $\Psi$. Fitting them independently and
+composing them, as in Section~\ref{sec:estimator}, throws this away. For RRXOR the cost is
+acute: the input-$1$ operator is nilpotent ($T_1^{\,5}=0$) and so individually carries almost
+no belief information, while the input-$0$ operator is defective; only \emph{jointly} do
+$\{T_0,T_1\}$ span the dynamics. We therefore recover the common invariant subspace directly,
+seeking an orthonormal $Q\in\mathbb R^{D\times d}$ that is simultaneously near-invariant under
+every operator,
+\begin{equation}
+Q^\star=\arg\min_{Q^\top Q=I_d}\;
+\sum_{x}\bigl\|\,(I-QQ^{\!\top})\,A_x\,Q\,\bigr\|_F^{2},
+\label{eq:joint-invariance}
+\end{equation}
+whose objective is zero exactly when $\operatorname{span}(Q)$ is invariant under all $A_x$.
+This is a joint (approximate) Schur problem rather than a joint diagonalisation: the
+operators are non-normal and defective, so a common eigenbasis need not exist, but a common
+invariant subspace does. Crucially, \eqref{eq:joint-invariance} is \emph{magnitude-agnostic};
+it does not prefer the large-eigenvalue (strongly observable) directions, which is what a
+dominant-subspace iteration would return and exactly the wrong bias for weak belief modes.
+The residual value of~\eqref{eq:joint-invariance} at $Q^\star$ is itself diagnostic: if it
+remains large, the \emph{estimated} operators do not share a clean common invariant
+subspace---an honest statement about estimation noise and defectiveness, not a quantity to be
+tuned away.
+
+\paragraph{Model order by spectral projection.}
+For a strongly observable process the order $d$ is the elbow in the (now Hankel) spectrum. For
+a defective process there may be no elbow: the powers $A^k$ of a defective operator carry
+polynomial-times-geometric envelopes $k^{j}\lambda^k$, so the ``modes'' smear across singular
+scales and fixing $d$ by hand from a known state count is not target-free. The principled
+alternative separates the state space by \emph{generalised eigenspace} rather than by singular
+magnitude, via the Riesz spectral projector. For the marginal activation-space operator
+$\widehat A=\sum_x A_x$ and a contour $\Gamma_\lambda$ enclosing only the eigenvalue cluster
+at $\lambda$,
+\begin{equation}
+P_\lambda \;=\; \frac{1}{2\pi i}\oint_{\Gamma_\lambda}\!\bigl(zI-\widehat A\bigr)^{-1}\,dz ,
+\label{eq:riesz}
+\end{equation}
+is the projector onto the invariant subspace of that cluster; it is robust to defective and
+repeated eigenvalues, where an eigenvector basis fails. The belief subspace is the span of the
+retained projectors and the order is its rank,
+\begin{equation}
+\mathcal{B}=\bigoplus_{\lambda\,\in\,\text{kept}}\operatorname{range}(P_\lambda),
+\qquad d=\dim\mathcal{B}.
+\label{eq:riesz-subspace}
+\end{equation}
+A genuine spectral projector satisfies $P_\lambda^2=P_\lambda$ with $\operatorname{tr}
+P_\lambda$ equal to the algebraic multiplicity it encloses; these identities are the
+verification that the contour encloses the intended cluster. Which clusters are
+``belief-bearing'' is itself a question---the nilpotent part of RRXOR contributes an
+eigenvalue at $0$, so the near-zero cluster may carry real belief structure rather than
+noise---and we report $d$ both with and without it, treating the difference as a finding.
+
+\paragraph{Summary.}
+The refined estimator is the same observable-operator construction read out in the correct
+geometry: intercepts absorb the affine offset~\eqref{eq:offset-noncommute}; the readout is
+Fisher-weighted~\eqref{eq:fisher-weight}; directions are ranked by the basis-independent
+Hankel singular values~\eqref{eq:balanced} of the balanced Gramians~\eqref{eq:Wc}--\eqref{eq:Wo}
+rather than by Euclidean magnitude; the operators are recovered through their common invariant
+subspace~\eqref{eq:joint-invariance}; and the order is fixed by spectral
+projection~\eqref{eq:riesz}. On Mess3, where belief is strongly observable, every refinement
+reduces to the original construction and the recovery is unchanged. On RRXOR the refinements
+are exactly what is needed to stop discarding the weakly observable belief directions---though
+no change of geometry can manufacture signal that the Hankel spectrum shows to be genuinely
+below the noise floor, and distinguishing those two regimes is precisely what the
+basis-independent spectrum now lets us do.
+
 \subsection{Mess3}
 
 \begin{figure}[!ht]

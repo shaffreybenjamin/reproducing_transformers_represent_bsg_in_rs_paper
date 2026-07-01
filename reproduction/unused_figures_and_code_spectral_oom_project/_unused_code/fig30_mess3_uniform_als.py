@@ -13,7 +13,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 import fig14_observable_oom as F14
 import fig23_unified_best as F23
 

@@ -25,7 +25,7 @@ from sklearn.linear_model import LinearRegression
 from simplexity.generative_processes.transition_matrices import rrxor, mess3
 import fig14_observable_oom as F14
 import fig13_rrxor_unsupervised_oom as F13
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 from diag_unification import collect, build, subspace_ab, score, whiten_power
 
 FIG_DIR = Path(__file__).parent / "figures"

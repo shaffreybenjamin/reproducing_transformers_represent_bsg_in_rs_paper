@@ -25,7 +25,7 @@ from simplexity.generative_processes.transition_matrices import rrxor
 import fig10_rrxor_representation as F10
 import fig14_observable_oom as F14
 
-MODEL_DIR = Path(__file__).parent.parent / "models"
+MODEL_DIR = Path(__file__).parent.parent / "models_paper1_sgd_ctx10"  # SGD/ctx10 paper-1 model
 FIG_DIR = Path(__file__).parent.parent / "figures"
 D = 5
 
@@ -48,7 +48,7 @@ def main():
         reach[w] = ok
     pw = F14.analytic_prefix_probs(resid, T, pi)             # P(w) sample weights
     _, _, _, _, Uobs, _ = F14.observable_subspace(resid, soft, reach, 2, depth=5, wmap=pw,
-                                                   use_multistep_als=True, als_max_order=1, als_n_iter=20)
+                                                   use_multistep_als=True, als_max_order=3, als_n_iter=30)
     B = Uobs[:, :D]                                           # (384, 5) unsupervised subspace
 
     # ---- fig10's exact data: every (input, position) of the length-10 enumeration ----

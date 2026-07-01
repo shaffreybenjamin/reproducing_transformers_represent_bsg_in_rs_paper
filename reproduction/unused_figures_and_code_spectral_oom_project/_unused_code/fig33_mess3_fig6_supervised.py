@@ -18,7 +18,7 @@ from sklearn.linear_model import LinearRegression
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from simplexity.generative_processes.builder import build_hidden_markov_model
-import unsupervised_belief_oom as U
+import reproduction.estimators.unsupervised_belief_oom as U
 
 MESS3 = {"x": 0.05, "a": 0.85}
 TRAIN_FRAC = 0.2
